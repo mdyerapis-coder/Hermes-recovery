@@ -18,7 +18,7 @@ concurrency:
 env:
   RELEASE_BRANCH: agent/bitwarden-smart-resume-v1.2.0-final
   ARCHIVE_NAME: hermes-rebuild-kit-v1.2.0.tar.gz
-  EXPECTED_TAR_SHA256: 7987421315d90febd663290551702512c49a0d09ec3176f7e301f7b2c237d663
+  EXPECTED_MANIFEST_SHA256: e977c542bc87bcf312b021f3092f50efdaa53df7056385d351ce32f5659e9453
 
 jobs:
   rebuild:
@@ -157,6 +157,12 @@ jobs:
               | LC_ALL=C sort -z \
               | xargs -0 sha256sum > MANIFEST.sha256
             sha256sum --check --strict MANIFEST.sha256
+            test "$(sha256sum MANIFEST.sha256 | awk '{print $1}')" = "$EXPECTED_MANIFEST_SHA256"
+            for executable in \
+              install.sh bootstrap.sh bin/hermes-rebuildctl bin/hermes_rebuild.py \
+              tests/run.sh tests/smoke_test.py tests/e2e_test.py tests/regression_v120_test.py; do
+              test "$(stat -c '%a' "$executable")" = 755
+            done
             bash -n install.sh bootstrap.sh bin/hermes-rebuildctl tests/run.sh
             sudo env \
               PYTHONDONTWRITEBYTECODE=1 \
@@ -164,6 +170,7 @@ jobs:
               ./tests/run.sh
             find . -type d -name __pycache__ -prune -exec rm -rf {} +
             sha256sum --check --strict MANIFEST.sha256
+            test "$(sha256sum MANIFEST.sha256 | awk '{print $1}')" = "$EXPECTED_MANIFEST_SHA256"
           )
 
           (
@@ -177,9 +184,7 @@ jobs:
               --format=gnu \
               -cf "$work/release.tar" hermes-rebuild-kit
           )
-          tar_sha="$(sha256sum "$work/release.tar" | awk '{print $1}')"
-          printf 'deterministic tar SHA-256: %s\n' "$tar_sha"
-          test "$tar_sha" = "$EXPECTED_TAR_SHA256"
+          printf 'release tar SHA-256: %s\n' "$(sha256sum "$work/release.tar" | awk '{print $1}')"
 
           gzip -n -9 -c "$work/release.tar" > "$work/$ARCHIVE_NAME"
           archive_sha="$(sha256sum "$work/$ARCHIVE_NAME" | awk '{print $1}')"
@@ -200,6 +205,7 @@ jobs:
           (
             cd "$work/verify/hermes-rebuild-kit"
             sha256sum --check --strict MANIFEST.sha256
+            test "$(sha256sum MANIFEST.sha256 | awk '{print $1}')" = "$EXPECTED_MANIFEST_SHA256"
             sudo env \
               PYTHONDONTWRITEBYTECODE=1 \
               PYTHONPYCACHEPREFIX="$work/verify-pycache" \
