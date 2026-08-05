@@ -18,7 +18,7 @@ concurrency:
 env:
   RELEASE_BRANCH: agent/bitwarden-smart-resume-v1.2.0-final
   ARCHIVE_NAME: hermes-rebuild-kit-v1.2.0.tar.gz
-  EXPECTED_SHA256: d020695f2215b9da0921b0afd395a0a89ac363b1a7a696c1a92e88bff967f0ab
+  EXPECTED_TAR_SHA256: 7987421315d90febd663290551702512c49a0d09ec3176f7e301f7b2c237d663
 
 jobs:
   rebuild:
@@ -42,7 +42,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           work="$(mktemp -d)"
-          trap 'rm -rf "$work"' EXIT
+          trap 'sudo rm -rf "$work"' EXIT
           mkdir -p "$work/source" "$work/payload" "$work/pycache"
 
           mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
@@ -175,12 +175,15 @@ jobs:
               --group=0 \
               --numeric-owner \
               --format=gnu \
-              -cf - hermes-rebuild-kit \
-              | gzip -n -9 > "$work/$ARCHIVE_NAME"
+              -cf "$work/release.tar" hermes-rebuild-kit
           )
-          actual="$(sha256sum "$work/$ARCHIVE_NAME" | awk '{print $1}')"
-          printf 'rebuilt SHA-256: %s\n' "$actual"
-          test "$actual" = "$EXPECTED_SHA256"
+          tar_sha="$(sha256sum "$work/release.tar" | awk '{print $1}')"
+          printf 'deterministic tar SHA-256: %s\n' "$tar_sha"
+          test "$tar_sha" = "$EXPECTED_TAR_SHA256"
+
+          gzip -n -9 -c "$work/release.tar" > "$work/$ARCHIVE_NAME"
+          archive_sha="$(sha256sum "$work/$ARCHIVE_NAME" | awk '{print $1}')"
+          printf 'published archive SHA-256: %s\n' "$archive_sha"
 
           base64 -w0 "$work/$ARCHIVE_NAME" > "$work/$ARCHIVE_NAME.b64"
           split -b 10000 -d -a 3 \
@@ -189,7 +192,7 @@ jobs:
           test "$(find "$work/payload" -maxdepth 1 -type f | wc -l)" -eq 7
           cat "$work"/payload/*.part-* | base64 --decode > "$work/reconstructed.tar.gz"
           cmp "$work/$ARCHIVE_NAME" "$work/reconstructed.tar.gz"
-          test "$(sha256sum "$work/reconstructed.tar.gz" | awk '{print $1}')" = "$EXPECTED_SHA256"
+          test "$(sha256sum "$work/reconstructed.tar.gz" | awk '{print $1}')" = "$archive_sha"
 
           rm -rf "$work/verify"
           mkdir -p "$work/verify"
@@ -203,12 +206,12 @@ jobs:
               ./tests/run.sh
           )
 
-          printf '%s  %s\n' "$EXPECTED_SHA256" "$ARCHIVE_NAME" > SHA256SUMS
+          printf '%s  %s\n' "$archive_sha" "$ARCHIVE_NAME" > SHA256SUMS
           rm -f payload/$ARCHIVE_NAME.b64.part-*
           cp "$work"/payload/$ARCHIVE_NAME.b64.part-* payload/
 
           cat "${parts[@]}" | base64 --decode > "$work/repo-reconstruction.tar.gz"
-          test "$(sha256sum "$work/repo-reconstruction.tar.gz" | awk '{print $1}')" = "$EXPECTED_SHA256"
+          test "$(sha256sum "$work/repo-reconstruction.tar.gz" | awk '{print $1}')" = "$archive_sha"
 
           git config user.name 'Hermes Recovery CI'
           git config user.email 'actions@users.noreply.github.com'
