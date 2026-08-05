@@ -51,7 +51,7 @@ if [[ ${EUID:-$(id -u)} -ne 0 && "${HERMES_RECOVERY_ALLOW_UNPRIVILEGED_TEST:-0}"
   exit 77
 fi
 
-for command in curl tar sha256sum base64; do
+for command in curl tar sha256sum base64 awk; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command is missing: $command" >&2
     exit 69
@@ -81,33 +81,69 @@ curl_security=(--proto '=https' --tlsv1.2)
 if [[ "${HERMES_RECOVERY_ALLOW_INSECURE_TEST_URL:-0}" == "1" ]]; then
   curl_security=()
 fi
-curl_common=("${curl_security[@]}" --fail --location --silent --show-error --retry 4 --retry-all-errors --connect-timeout 20)
+curl_retry="${HERMES_RECOVERY_CURL_RETRY:-4}"
+curl_connect_timeout="${HERMES_RECOVERY_CONNECT_TIMEOUT:-20}"
+[[ "$curl_retry" =~ ^[0-9]+$ && "$curl_connect_timeout" =~ ^[1-9][0-9]*$ ]] || {
+  echo "ERROR: invalid curl retry/connect-timeout override" >&2
+  exit 64
+}
+curl_common=("${curl_security[@]}" --fail --location --silent --show-error --retry "$curl_retry" --retry-all-errors --connect-timeout "$curl_connect_timeout")
 
 echo "Downloading verified Hermes recovery kit v${KIT_VERSION} ..."
+reconstruct_payload() {
+  local parts_file="$work/parts.txt"
+  local encoded="$work/${ARCHIVE_NAME}.b64"
+  local part_file part expected_part
+  local -a parts=()
+  local expected_count="${HERMES_RECOVERY_PART_COUNT:-7}"
+
+  [[ "$expected_count" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: HERMES_RECOVERY_PART_COUNT must be a positive integer" >&2
+    exit 64
+  }
+  curl "${curl_common[@]}" "${BASE_URL}/payload/parts.txt" -o "$parts_file"
+  while IFS= read -r part || [[ -n "$part" ]]; do
+    [[ -z "$part" || "$part" == \#* ]] && continue
+    parts+=("$part")
+  done < "$parts_file"
+  [[ "${#parts[@]}" -eq "$expected_count" ]] || {
+    echo "ERROR: payload index lists ${#parts[@]} parts; expected $expected_count" >&2
+    exit 65
+  }
+
+  : > "$encoded"
+  for ((i=0; i<expected_count; i++)); do
+    printf -v expected_part 'payload/%s.b64.part-%03d' "$ARCHIVE_NAME" "$i"
+    part="${parts[$i]}"
+    [[ "$part" == "$expected_part" ]] || {
+      echo "ERROR: payload index is incomplete or out of order at part $i: expected $expected_part, got $part" >&2
+      exit 65
+    }
+    part_file="$work/part-$i"
+    if ! curl "${curl_common[@]}" "${BASE_URL}/${part}" -o "$part_file"; then
+      echo "ERROR: required payload part is unavailable: $part" >&2
+      exit 65
+    fi
+    [[ -s "$part_file" ]] || {
+      echo "ERROR: required payload part is empty: $part" >&2
+      exit 65
+    }
+    cat "$part_file" >> "$encoded"
+  done
+  base64 --decode "$encoded" > "$archive" || {
+    echo "ERROR: payload parts did not decode into a valid archive byte stream" >&2
+    exit 65
+  }
+}
+
 if [[ -n "${HERMES_RECOVERY_ARCHIVE_URL:-}" ]]; then
   curl "${curl_common[@]}" "$ARCHIVE_URL" -o "$archive"
 elif curl "${curl_common[@]}" "$ARCHIVE_URL" -o "$archive"; then
-  : # Preferred path: download the versioned archive directly from the repository.
+  : # Prefer a directly published archive when a release provides one.
 else
-  echo "Direct archive download unavailable; reconstructing verified payload parts ..." >&2
-  parts_file="$work/parts.txt"
-  encoded="$work/${ARCHIVE_NAME}.b64"
+  echo "Direct archive unavailable; reconstructing the ordered payload parts ..." >&2
   rm -f -- "$archive"
-  curl "${curl_common[@]}" "${BASE_URL}/payload/parts.txt" -o "$parts_file"
-  : > "$encoded"
-  while IFS= read -r part || [[ -n "$part" ]]; do
-    [[ -z "$part" || "$part" == \#* ]] && continue
-    [[ "$part" =~ ^payload/${ARCHIVE_NAME}\.b64\.part-[0-9]{3}$ ]] || {
-      echo "ERROR: invalid payload part name: $part" >&2
-      exit 65
-    }
-    curl "${curl_common[@]}" "${BASE_URL}/${part}" >> "$encoded"
-  done < "$parts_file"
-  [[ -s "$encoded" ]] || {
-    echo "ERROR: no recovery payload parts were downloaded" >&2
-    exit 65
-  }
-  base64 --decode "$encoded" > "$archive"
+  reconstruct_payload
 fi
 
 expected="${HERMES_RECOVERY_EXPECTED_SHA256:-}"
