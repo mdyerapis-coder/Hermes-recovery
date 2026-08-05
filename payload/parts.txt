@@ -1,3 +1,7 @@
 payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-000
 payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-001
 payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-002
+payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-003
+payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-004
+payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-005
+payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-006
