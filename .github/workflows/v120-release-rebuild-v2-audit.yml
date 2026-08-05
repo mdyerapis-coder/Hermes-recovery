@@ -1,0 +1,79 @@
+name: v1.2.0 audited verified release rebuild v2
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v120-release-rebuild-v2-audit.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch-and-audit:
+    name: Dispatch verified builder and expose logs
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_BRANCH: agent/bitwarden-smart-resume-v1.2.0-final
+      BUILDER: v120-release-rebuild-v2.yml
+
+    steps:
+      - name: Dispatch verified release builder
+        run: |
+          set -Eeuo pipefail
+          before="$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow "$BUILDER" \
+            --branch "$RELEASE_BRANCH" \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId // 0')"
+          gh workflow run "$BUILDER" \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$RELEASE_BRANCH"
+          run_id=''
+          for attempt in $(seq 1 30); do
+            candidate="$(gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow "$BUILDER" \
+              --branch "$RELEASE_BRANCH" \
+              --event workflow_dispatch \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId // 0')"
+            if [[ "$candidate" != 0 && "$candidate" != "$before" ]]; then
+              run_id="$candidate"
+              break
+            fi
+            sleep 2
+          done
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_ENV"
+
+      - name: Wait for builder and expose failures
+        run: |
+          set -Eeuo pipefail
+          set +e
+          gh run watch "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --exit-status
+          rc=$?
+          set -e
+          if [[ "$rc" -ne 0 ]]; then
+            gh run view "$run_id" \
+              --repo "$GITHUB_REPOSITORY" \
+              --log-failed || true
+            exit "$rc"
+          fi
+
+      - name: Confirm generated commit
+        run: |
+          set -Eeuo pipefail
+          message="$(gh api \
+            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_BRANCH" \
+            --jq '.commit.message')"
+          test "$message" = 'fix: bootstrap OpenSSL and plan-only test mode'
