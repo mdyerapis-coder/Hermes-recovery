@@ -9,7 +9,7 @@ umask 077
 
 REPO="${HERMES_RECOVERY_REPO:-mdyerapis-coder/Hermes-recovery}"
 REF="${HERMES_RECOVERY_REF:-main}"
-KIT_VERSION="${HERMES_RECOVERY_VERSION:-1.1.0}"
+KIT_VERSION="${HERMES_RECOVERY_VERSION:-1.2.0}"
 INSTALL_BASE="${HERMES_RECOVERY_INSTALL_BASE:-/opt/hermes-recovery-kit}"
 ARCHIVE_NAME="hermes-rebuild-kit-v${KIT_VERSION}.tar.gz"
 BASE_URL="${HERMES_RECOVERY_BASE_URL:-https://raw.githubusercontent.com/${REPO}/${REF}}"
@@ -29,7 +29,7 @@ Unattended recovery:
 Environment overrides:
   HERMES_RECOVERY_REPO=owner/repository
   HERMES_RECOVERY_REF=branch|tag|commit
-  HERMES_RECOVERY_VERSION=1.1.0
+  HERMES_RECOVERY_VERSION=1.2.0
   HERMES_RECOVERY_INSTALL_BASE=/opt/hermes-recovery-kit
   HERMES_RECOVERY_BASE_URL=https://mirror/path
   HERMES_RECOVERY_ARCHIVE_URL=https://mirror/path/kit.tar.gz
@@ -51,7 +51,7 @@ if [[ ${EUID:-$(id -u)} -ne 0 && "${HERMES_RECOVERY_ALLOW_UNPRIVILEGED_TEST:-0}"
   exit 77
 fi
 
-for command in curl tar sha256sum base64 python3; do
+for command in curl tar sha256sum base64; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command is missing: $command" >&2
     exit 69
@@ -123,8 +123,6 @@ fi
 
 (
   cd "$work"
-  # The published checksum file may cover multiple release files. Require an
-  # exact entry for the selected archive and verify only that entry.
   line="$(awk -v name="$ARCHIVE_NAME" '$2 == name || $2 == "*" name {print; exit}' SHA256SUMS)"
   [[ -n "$line" ]] || {
     echo "ERROR: SHA256SUMS has no entry for $ARCHIVE_NAME" >&2
@@ -149,47 +147,6 @@ embedded_version="$(tr -d '[:space:]' < "$source_dir/VERSION")"
   echo "ERROR: archive version $embedded_version does not match requested $KIT_VERSION" >&2
   exit 65
 }
-
-# Emergency Fedora 41+ compatibility hotfixes for recovery kit 1.1.0.
-# The signed archive and internal manifest are verified before these exact,
-# auditable source transformations are applied.
-if [[ "$embedded_version" == "1.1.0" ]]; then
-  python3 - "$source_dir/bin/hermes_rebuild.py" <<'PYHOTFIX'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-
-dnf4 = 'ctx.runner.run(["dnf", "config-manager", "--add-repo", repo_url])'
-dnf5 = 'ctx.runner.run(["dnf", "config-manager", "addrepo", f"--from-repofile={repo_url}"])'
-if dnf4 in text:
-    text = text.replace(dnf4, dnf5, 1)
-elif dnf5 not in text:
-    raise SystemExit("ERROR: DNF5 hotfix target was not found; refusing to continue")
-
-npm_old = """    prefix = pathlib.Path("/opt/hermes-tools/npm")
-    uid, gid = user_ids(ctx.runtime_user)
-    prefix.mkdir(parents=True, exist_ok=True)
-    os.chown(prefix, uid, gid)
-"""
-npm_new = """    prefix = pathlib.Path("/opt/hermes-tools/npm")
-    uid, gid = user_ids(ctx.runtime_user)
-    prefix.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(prefix.parent, 0o755)
-    prefix.mkdir(parents=True, exist_ok=True)
-    os.chown(prefix, uid, gid)
-    os.chmod(prefix, 0o755)
-"""
-if npm_old in text:
-    text = text.replace(npm_old, npm_new, 1)
-elif npm_new not in text:
-    raise SystemExit("ERROR: npm permission hotfix target was not found; refusing to continue")
-
-path.write_text(text, encoding="utf-8")
-PYHOTFIX
-  echo "Applied verified Fedora DNF5 and npm permissions hotfixes."
-fi
 
 release_dir="$INSTALL_BASE/releases/$KIT_VERSION"
 mkdir -p "$INSTALL_BASE/releases"
