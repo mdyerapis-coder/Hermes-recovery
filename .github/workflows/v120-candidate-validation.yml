@@ -71,8 +71,8 @@ jobs:
             cd "$kit"
             sha256sum --check --strict MANIFEST.sha256
             bash -n install.sh bootstrap.sh bin/hermes-rebuildctl tests/run.sh
-            python3 -m compileall -q bin tests
-            ./tests/run.sh
+            sudo env PYTHONPYCACHEPREFIX=/tmp/hermes-pyc python3 -m compileall -q bin tests
+            sudo ./tests/run.sh
           )
           echo "kit=$kit" >> "$GITHUB_OUTPUT"
 
