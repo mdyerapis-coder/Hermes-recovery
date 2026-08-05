@@ -106,6 +106,7 @@ jobs:
             set +e
             output="$(env \
               HERMES_RECOVERY_ALLOW_INSECURE_TEST_URL=1 \
+              HERMES_RECOVERY_ALLOW_UNPRIVILEGED_TEST=1 \
               HERMES_RECOVERY_BASE_URL="file://${fixture}" \
               HERMES_RECOVERY_CHECKSUM_URL="file://${fixture}/SHA256SUMS" \
               HERMES_RECOVERY_CURL_RETRY=0 \
