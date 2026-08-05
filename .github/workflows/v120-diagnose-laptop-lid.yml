@@ -35,11 +35,12 @@ jobs:
           cd /tmp/hermes-lid-diagnostic/hermes-rebuild-kit
           sha256sum --check --strict MANIFEST.sha256
           echo '--- stage_laptop_lid source ---'
-          start="$(grep -n '^    def stage_laptop_lid' bin/hermes_rebuild.py | cut -d: -f1)"
+          start="$(grep -n -m1 'def stage_laptop_lid' bin/hermes_rebuild.py | cut -d: -f1)"
           test -n "$start"
-          end=$((start + 140))
-          nl -ba bin/hermes_rebuild.py | sed -n "${start},${end}p"
+          begin=$((start > 15 ? start - 15 : 1))
+          end=$((start + 150))
+          nl -ba bin/hermes_rebuild.py | sed -n "${begin},${end}p"
           echo '--- related regression coverage ---'
-          grep -n -C 8 -E 'laptop_lid|laptop-lid|systemd-inhibit|FUNCTIONS=' \
+          grep -n -C 10 -E 'laptop_lid|laptop-lid|systemd-inhibit|FUNCTIONS=' \
             tests/regression_v120_test.py tests/e2e_test.py tests/smoke_test.py \
             || true
