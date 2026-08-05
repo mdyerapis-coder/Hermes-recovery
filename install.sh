@@ -150,25 +150,45 @@ embedded_version="$(tr -d '[:space:]' < "$source_dir/VERSION")"
   exit 65
 }
 
-# Emergency Fedora 41+ / DNF5 compatibility hotfix for recovery kit 1.1.0.
-# The archive is verified first; this exact, auditable source transformation is
-# then applied before installation. DNF5 replaced config-manager --add-repo
-# with the addrepo subcommand and --from-repofile option.
+# Emergency Fedora 41+ compatibility hotfixes for recovery kit 1.1.0.
+# The signed archive and internal manifest are verified before these exact,
+# auditable source transformations are applied.
 if [[ "$embedded_version" == "1.1.0" ]]; then
   python3 - "$source_dir/bin/hermes_rebuild.py" <<'PYHOTFIX'
 from pathlib import Path
 import sys
+
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
-old = 'ctx.runner.run(["dnf", "config-manager", "--add-repo", repo_url])'
-new = 'ctx.runner.run(["dnf", "config-manager", "addrepo", f"--from-repofile={repo_url}"])'
-if old in text:
-    text = text.replace(old, new, 1)
-    path.write_text(text, encoding="utf-8")
-elif new not in text:
+
+dnf4 = 'ctx.runner.run(["dnf", "config-manager", "--add-repo", repo_url])'
+dnf5 = 'ctx.runner.run(["dnf", "config-manager", "addrepo", f"--from-repofile={repo_url}"])'
+if dnf4 in text:
+    text = text.replace(dnf4, dnf5, 1)
+elif dnf5 not in text:
     raise SystemExit("ERROR: DNF5 hotfix target was not found; refusing to continue")
+
+npm_old = """    prefix = pathlib.Path("/opt/hermes-tools/npm")
+    uid, gid = user_ids(ctx.runtime_user)
+    prefix.mkdir(parents=True, exist_ok=True)
+    os.chown(prefix, uid, gid)
+"""
+npm_new = """    prefix = pathlib.Path("/opt/hermes-tools/npm")
+    uid, gid = user_ids(ctx.runtime_user)
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(prefix.parent, 0o755)
+    prefix.mkdir(parents=True, exist_ok=True)
+    os.chown(prefix, uid, gid)
+    os.chmod(prefix, 0o755)
+"""
+if npm_old in text:
+    text = text.replace(npm_old, npm_new, 1)
+elif npm_new not in text:
+    raise SystemExit("ERROR: npm permission hotfix target was not found; refusing to continue")
+
+path.write_text(text, encoding="utf-8")
 PYHOTFIX
-  echo "Applied verified Fedora DNF5 Docker repository hotfix."
+  echo "Applied verified Fedora DNF5 and npm permissions hotfixes."
 fi
 
 release_dir="$INSTALL_BASE/releases/$KIT_VERSION"
