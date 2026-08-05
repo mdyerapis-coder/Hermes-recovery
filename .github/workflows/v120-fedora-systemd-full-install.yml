@@ -2,6 +2,15 @@ name: v1.2.0 disposable Fedora systemd install
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v120-fedora-systemd-full-install.yml'
+      - 'install.sh'
+      - 'SHA256SUMS'
+      - 'VERSION'
+      - 'payload/**'
   push:
     branches:
       - agent/bitwarden-smart-resume-v1.2.0-final
