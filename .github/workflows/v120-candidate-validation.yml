@@ -1,0 +1,118 @@
+name: v1.2.0 candidate validation
+
+on:
+  push:
+    branches:
+      - agent/bitwarden-smart-resume-v1.2.0-final
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v120-candidate-validation.yml'
+      - 'install.sh'
+      - 'SHA256SUMS'
+      - 'VERSION'
+      - 'payload/**'
+      - 'README.md'
+      - 'REGRESSION-MATRIX.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v120-candidate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ubuntu-validation:
+    name: Ubuntu tests and loader reconstruction
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Install test dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-yaml
+
+      - name: Run source test suite
+        run: ./tests/run.sh
+
+      - name: Reconstruct and verify seven-part payload
+        run: |
+          set -Eeuo pipefail
+          mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
+          test "${#parts[@]}" -eq 7
+          for index in "${!parts[@]}"; do
+            printf -v expected 'payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-%03d' "$index"
+            test "${parts[$index]}" = "$expected"
+            test -s "${parts[$index]}"
+          done
+          cat "${parts[@]}" | base64 --decode > /tmp/hermes-rebuild-kit-v1.2.0.tar.gz
+          (cd /tmp && sha256sum --check <(grep '  hermes-rebuild-kit-v1.2.0.tar.gz$' "$GITHUB_WORKSPACE/SHA256SUMS"))
+          rm -rf /tmp/hermes-rebuild-verified
+          mkdir -p /tmp/hermes-rebuild-verified
+          tar -xzf /tmp/hermes-rebuild-kit-v1.2.0.tar.gz -C /tmp/hermes-rebuild-verified
+          (
+            cd /tmp/hermes-rebuild-verified/hermes-rebuild-kit
+            sha256sum --check --strict MANIFEST.sha256
+            ./tests/run.sh
+          )
+
+      - name: Exercise fail-closed loader from split payload
+        run: |
+          set -Eeuo pipefail
+          sudo rm -rf /tmp/hermes-recovery-kit-ci
+          sudo env \
+            HERMES_RECOVERY_ALLOW_INSECURE_TEST_URL=1 \
+            HERMES_RECOVERY_BASE_URL="file://${GITHUB_WORKSPACE}" \
+            HERMES_RECOVERY_CHECKSUM_URL="file://${GITHUB_WORKSPACE}/SHA256SUMS" \
+            HERMES_RECOVERY_CURL_RETRY=0 \
+            HERMES_RECOVERY_INSTALL_BASE=/tmp/hermes-recovery-kit-ci \
+            bash ./install.sh --plan --config "$GITHUB_WORKSPACE/templates/config.example.yaml"
+          test -L /tmp/hermes-recovery-kit-ci/current
+          test "$(cat /tmp/hermes-recovery-kit-ci/current/VERSION)" = '1.2.0'
+
+  fedora-validation:
+    name: Fedora DNF5 and payload validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: fedora:latest
+    steps:
+      - name: Install Fedora test dependencies
+        run: |
+          dnf -y install \
+            bash coreutils curl findutils git gzip python3 python3-pyyaml tar
+
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Confirm DNF5 and run source suite
+        run: |
+          dnf --version
+          ./tests/run.sh
+
+      - name: Reconstruct payload and exercise loader on Fedora
+        run: |
+          set -Eeuo pipefail
+          mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
+          test "${#parts[@]}" -eq 7
+          cat "${parts[@]}" | base64 --decode > /tmp/hermes-rebuild-kit-v1.2.0.tar.gz
+          (cd /tmp && sha256sum --check <(grep '  hermes-rebuild-kit-v1.2.0.tar.gz$' "$GITHUB_WORKSPACE/SHA256SUMS"))
+          rm -rf /tmp/hermes-recovery-kit-ci
+          env \
+            HERMES_RECOVERY_ALLOW_INSECURE_TEST_URL=1 \
+            HERMES_RECOVERY_BASE_URL="file://${GITHUB_WORKSPACE}" \
+            HERMES_RECOVERY_CHECKSUM_URL="file://${GITHUB_WORKSPACE}/SHA256SUMS" \
+            HERMES_RECOVERY_CURL_RETRY=0 \
+            HERMES_RECOVERY_INSTALL_BASE=/tmp/hermes-recovery-kit-ci \
+            bash ./install.sh --plan --config "$GITHUB_WORKSPACE/templates/config.example.yaml"
+          test -L /tmp/hermes-recovery-kit-ci/current
+          test "$(cat /tmp/hermes-recovery-kit-ci/current/VERSION)" = '1.2.0'
