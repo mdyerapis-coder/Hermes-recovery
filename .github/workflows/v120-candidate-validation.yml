@@ -1,6 +1,7 @@
 name: v1.2.0 candidate validation
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - agent/bitwarden-smart-resume-v1.2.0-final
@@ -27,11 +28,15 @@ defaults:
   run:
     shell: bash
 
+env:
+  ARCHIVE_NAME: hermes-rebuild-kit-v1.2.0.tar.gz
+  EXPECTED_PARTS: '7'
+
 jobs:
   ubuntu-validation:
-    name: Ubuntu tests and loader reconstruction
+    name: Ubuntu archive, tests and adversarial loader
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out candidate
         uses: actions/checkout@v4
@@ -41,28 +46,39 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends python3-yaml
 
-      - name: Reconstruct, verify and test seven-part payload
+      - name: Reconstruct and verify candidate archive
+        id: archive
         run: |
           set -Eeuo pipefail
           mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
-          test "${#parts[@]}" -eq 7
+          test "${#parts[@]}" -eq "$EXPECTED_PARTS"
           for index in "${!parts[@]}"; do
-            printf -v expected 'payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-%03d' "$index"
+            printf -v expected 'payload/%s.b64.part-%03d' "$ARCHIVE_NAME" "$index"
             test "${parts[$index]}" = "$expected"
             test -s "${parts[$index]}"
           done
-          cat "${parts[@]}" | base64 --decode > /tmp/hermes-rebuild-kit-v1.2.0.tar.gz
-          (cd /tmp && sha256sum --check <(grep '  hermes-rebuild-kit-v1.2.0.tar.gz$' "$GITHUB_WORKSPACE/SHA256SUMS"))
+          cat "${parts[@]}" | base64 --decode > "/tmp/$ARCHIVE_NAME"
+          (
+            cd /tmp
+            grep "  $ARCHIVE_NAME$" "$GITHUB_WORKSPACE/SHA256SUMS" | sha256sum --check --strict -
+          )
           rm -rf /tmp/hermes-rebuild-verified
           mkdir -p /tmp/hermes-rebuild-verified
-          tar -xzf /tmp/hermes-rebuild-kit-v1.2.0.tar.gz -C /tmp/hermes-rebuild-verified
+          tar -xzf "/tmp/$ARCHIVE_NAME" -C /tmp/hermes-rebuild-verified
+          kit=/tmp/hermes-rebuild-verified/hermes-rebuild-kit
+          test "$(tr -d '[:space:]' < "$kit/VERSION")" = '1.2.0'
           (
-            cd /tmp/hermes-rebuild-verified/hermes-rebuild-kit
+            cd "$kit"
             sha256sum --check --strict MANIFEST.sha256
-            sudo ./tests/run.sh
+            bash -n install.sh bootstrap.sh bin/hermes-rebuildctl tests/run.sh
+            python3 -m compileall -q bin tests
+            ./tests/run.sh
           )
+          echo "kit=$kit" >> "$GITHUB_OUTPUT"
 
-      - name: Exercise fail-closed loader from split payload
+      - name: Exercise split-payload loader
+        env:
+          KIT: ${{ steps.archive.outputs.kit }}
         run: |
           set -Eeuo pipefail
           sudo rm -rf /tmp/hermes-recovery-kit-ci
@@ -72,12 +88,41 @@ jobs:
             HERMES_RECOVERY_CHECKSUM_URL="file://${GITHUB_WORKSPACE}/SHA256SUMS" \
             HERMES_RECOVERY_CURL_RETRY=0 \
             HERMES_RECOVERY_INSTALL_BASE=/tmp/hermes-recovery-kit-ci \
-            bash ./install.sh --plan --config /tmp/hermes-rebuild-verified/hermes-rebuild-kit/templates/config.example.yaml
-          sudo test -L /tmp/hermes-recovery-kit-ci/current
-          sudo test "$(sudo cat /tmp/hermes-recovery-kit-ci/current/VERSION)" = '1.2.0'
+            bash ./install.sh --plan --config "$KIT/templates/config.example.yaml"
+          test -L /tmp/hermes-recovery-kit-ci/current
+          test "$(cat /tmp/hermes-recovery-kit-ci/current/VERSION)" = '1.2.0'
+
+      - name: Verify fail-closed payload handling
+        env:
+          KIT: ${{ steps.archive.outputs.kit }}
+        run: |
+          set -Eeuo pipefail
+          exercise_failure() {
+            local name="$1" mutation="$2"
+            local fixture output rc
+            fixture="$(mktemp -d)"
+            cp -a "$GITHUB_WORKSPACE"/. "$fixture"/
+            eval "$mutation"
+            set +e
+            output="$(env \
+              HERMES_RECOVERY_ALLOW_INSECURE_TEST_URL=1 \
+              HERMES_RECOVERY_BASE_URL="file://${fixture}" \
+              HERMES_RECOVERY_CHECKSUM_URL="file://${fixture}/SHA256SUMS" \
+              HERMES_RECOVERY_CURL_RETRY=0 \
+              HERMES_RECOVERY_INSTALL_BASE="$(mktemp -d)/install" \
+              bash "$fixture/install.sh" --plan --config "$KIT/templates/config.example.yaml" 2>&1)"
+            rc=$?
+            set -e
+            printf '%s: exit=%s\n%s\n' "$name" "$rc" "$output"
+            test "$rc" -eq 65
+          }
+          exercise_failure missing_part 'rm -f "$fixture/payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-004"'
+          exercise_failure empty_part ': > "$fixture/payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-004"'
+          exercise_failure corrupt_part 'printf X >> "$fixture/payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-004"'
+          exercise_failure wrong_order 'sed -i "4s/003/004/;5s/004/003/" "$fixture/payload/parts.txt"'
 
   fedora-validation:
-    name: Fedora DNF5 and payload validation
+    name: Fedora DNF5 archive and loader
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -91,29 +136,37 @@ jobs:
       - name: Check out candidate
         uses: actions/checkout@v4
 
-      - name: Confirm DNF5, reconstruct and test payload
+      - name: Confirm DNF5 and reconstruct candidate
+        id: archive
         run: |
           set -Eeuo pipefail
           dnf --version
           mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
-          test "${#parts[@]}" -eq 7
+          test "${#parts[@]}" -eq "$EXPECTED_PARTS"
           for index in "${!parts[@]}"; do
-            printf -v expected 'payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-%03d' "$index"
+            printf -v expected 'payload/%s.b64.part-%03d' "$ARCHIVE_NAME" "$index"
             test "${parts[$index]}" = "$expected"
             test -s "${parts[$index]}"
           done
-          cat "${parts[@]}" | base64 --decode > /tmp/hermes-rebuild-kit-v1.2.0.tar.gz
-          (cd /tmp && sha256sum --check <(grep '  hermes-rebuild-kit-v1.2.0.tar.gz$' "$GITHUB_WORKSPACE/SHA256SUMS"))
-          rm -rf /tmp/hermes-rebuild-verified
-          mkdir -p /tmp/hermes-rebuild-verified
-          tar -xzf /tmp/hermes-rebuild-kit-v1.2.0.tar.gz -C /tmp/hermes-rebuild-verified
+          cat "${parts[@]}" | base64 --decode > "/tmp/$ARCHIVE_NAME"
           (
-            cd /tmp/hermes-rebuild-verified/hermes-rebuild-kit
+            cd /tmp
+            grep "  $ARCHIVE_NAME$" "$GITHUB_WORKSPACE/SHA256SUMS" | sha256sum --check --strict -
+          )
+          rm -rf /tmp/hermes-rebuild-fedora
+          mkdir -p /tmp/hermes-rebuild-fedora
+          tar -xzf "/tmp/$ARCHIVE_NAME" -C /tmp/hermes-rebuild-fedora
+          kit=/tmp/hermes-rebuild-fedora/hermes-rebuild-kit
+          (
+            cd "$kit"
             sha256sum --check --strict MANIFEST.sha256
             ./tests/run.sh
           )
+          echo "kit=$kit" >> "$GITHUB_OUTPUT"
 
-      - name: Exercise loader on Fedora
+      - name: Exercise loader under Fedora
+        env:
+          KIT: ${{ steps.archive.outputs.kit }}
         run: |
           set -Eeuo pipefail
           rm -rf /tmp/hermes-recovery-kit-ci
@@ -123,6 +176,6 @@ jobs:
             HERMES_RECOVERY_CHECKSUM_URL="file://${GITHUB_WORKSPACE}/SHA256SUMS" \
             HERMES_RECOVERY_CURL_RETRY=0 \
             HERMES_RECOVERY_INSTALL_BASE=/tmp/hermes-recovery-kit-ci \
-            bash ./install.sh --plan --config /tmp/hermes-rebuild-verified/hermes-rebuild-kit/templates/config.example.yaml
+            bash ./install.sh --plan --config "$KIT/templates/config.example.yaml"
           test -L /tmp/hermes-recovery-kit-ci/current
           test "$(cat /tmp/hermes-recovery-kit-ci/current/VERSION)" = '1.2.0'
