@@ -73,8 +73,8 @@ jobs:
             HERMES_RECOVERY_CURL_RETRY=0 \
             HERMES_RECOVERY_INSTALL_BASE=/tmp/hermes-recovery-kit-ci \
             bash ./install.sh --plan --config /tmp/hermes-rebuild-verified/hermes-rebuild-kit/templates/config.example.yaml
-          test -L /tmp/hermes-recovery-kit-ci/current
-          test "$(cat /tmp/hermes-recovery-kit-ci/current/VERSION)" = '1.2.0'
+          sudo test -L /tmp/hermes-recovery-kit-ci/current
+          sudo test "$(sudo cat /tmp/hermes-recovery-kit-ci/current/VERSION)" = '1.2.0'
 
   fedora-validation:
     name: Fedora DNF5 and payload validation
