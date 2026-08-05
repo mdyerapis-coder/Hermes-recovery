@@ -59,7 +59,7 @@ jobs:
           (
             cd /tmp/hermes-rebuild-verified/hermes-rebuild-kit
             sha256sum --check --strict MANIFEST.sha256
-            ./tests/run.sh
+            sudo ./tests/run.sh
           )
 
       - name: Exercise fail-closed loader from split payload
