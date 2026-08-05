@@ -51,7 +51,7 @@ if [[ ${EUID:-$(id -u)} -ne 0 && "${HERMES_RECOVERY_ALLOW_UNPRIVILEGED_TEST:-0}"
   exit 77
 fi
 
-for command in curl tar sha256sum base64; do
+for command in curl tar sha256sum base64 python3; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command is missing: $command" >&2
     exit 69
@@ -149,6 +149,27 @@ embedded_version="$(tr -d '[:space:]' < "$source_dir/VERSION")"
   echo "ERROR: archive version $embedded_version does not match requested $KIT_VERSION" >&2
   exit 65
 }
+
+# Emergency Fedora 41+ / DNF5 compatibility hotfix for recovery kit 1.1.0.
+# The archive is verified first; this exact, auditable source transformation is
+# then applied before installation. DNF5 replaced config-manager --add-repo
+# with the addrepo subcommand and --from-repofile option.
+if [[ "$embedded_version" == "1.1.0" ]]; then
+  python3 - "$source_dir/bin/hermes_rebuild.py" <<'PYHOTFIX'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = 'ctx.runner.run(["dnf", "config-manager", "--add-repo", repo_url])'
+new = 'ctx.runner.run(["dnf", "config-manager", "addrepo", f"--from-repofile={repo_url}"])'
+if old in text:
+    text = text.replace(old, new, 1)
+    path.write_text(text, encoding="utf-8")
+elif new not in text:
+    raise SystemExit("ERROR: DNF5 hotfix target was not found; refusing to continue")
+PYHOTFIX
+  echo "Applied verified Fedora DNF5 Docker repository hotfix."
+fi
 
 release_dir="$INSTALL_BASE/releases/$KIT_VERSION"
 mkdir -p "$INSTALL_BASE/releases"
