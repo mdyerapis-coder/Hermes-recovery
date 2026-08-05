@@ -89,8 +89,8 @@ jobs:
             HERMES_RECOVERY_CURL_RETRY=0 \
             HERMES_RECOVERY_INSTALL_BASE=/tmp/hermes-recovery-kit-ci \
             bash ./install.sh --plan --config "$KIT/templates/config.example.yaml"
-          test -L /tmp/hermes-recovery-kit-ci/current
-          test "$(cat /tmp/hermes-recovery-kit-ci/current/VERSION)" = '1.2.0'
+          sudo test -L /tmp/hermes-recovery-kit-ci/current
+          sudo test "$(sudo cat /tmp/hermes-recovery-kit-ci/current/VERSION)" = '1.2.0'
 
       - name: Verify fail-closed payload handling
         env:
