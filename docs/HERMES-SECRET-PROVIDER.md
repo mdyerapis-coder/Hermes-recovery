@@ -5,6 +5,14 @@ HSP v1.2 uses the Bitwarden CLI to resolve recovery credentials from the
 wrapper around the existing recovery controller, so the controller remains the
 single owner of rebuild sequencing and safety gates.
 
+## Native Bitwarden CLI
+
+On an active recovery run, HSP installs the pinned Bitwarden CLI `2026.4.2` when
+`bw` is absent. It downloads the official Linux ZIP and matching SHA-256 file
+from Bitwarden's GitHub release, verifies the archive, installs atomically under
+`/opt/hermes-tools/bitwarden`, and links `/usr/local/bin/bw`. It does not use a
+global npm prefix. Set `HERMES_HSP_INSTALL_BW=0` to prohibit automatic install.
+
 ## Security properties
 
 - Existing environment variables are preserved and never overwritten.
@@ -14,7 +22,7 @@ single owner of rebuild sequencing and safety gates.
 - Resolved values live only in the wrapper and child-process environment.
 - The in-memory cache is cleared on exit; a vault unlocked by HSP is relocked.
 - Passive operations (`--help`, `--plan`, `--health`, `--summary`, rollback) do
-  not unlock the vault unless `HERMES_HSP_FORCE=1` is set.
+  not install or unlock Bitwarden unless `HERMES_HSP_FORCE=1` is set.
 
 ## Vault item conventions
 
@@ -47,8 +55,25 @@ sudo --preserve-env=BW_SESSION \
 The unattended configuration should continue to reference `env:NAME` or
 `env?:NAME`; HSP supplies those environment values before the controller runs.
 
+## Install the candidate on Hermes Station
+
+From the feature branch checkout:
+
+```bash
+cd /opt/hermes-stack/Hermes-recovery
+git fetch origin
+git switch agent/hsp-bitwarden-v1.2
+git pull --ff-only
+sudo python3 scripts/install_local_candidate.py
+sudo /opt/hermes-recovery-kit/current/bootstrap.sh --health
+```
+
+The installer preserves the prior release and prints the exact rollback command.
+It does not run a rebuild automatically.
+
 ## Controls
 
 - `HERMES_HSP_DISABLE=1` bypasses HSP.
 - `HERMES_HSP_FORCE=1` enables HSP for passive modes.
+- `HERMES_HSP_INSTALL_BW=0` disables native CLI installation.
 - `HERMES_HSP_MANIFEST=/protected/path/secrets.json` selects another manifest.
