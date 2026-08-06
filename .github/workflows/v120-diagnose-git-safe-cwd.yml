@@ -1,0 +1,44 @@
+name: Diagnose v1.2.0 Git safe-directory cwd
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v120-diagnose-git-safe-cwd.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Reconstruct and inspect signed controller
+        run: |
+          set -Eeuo pipefail
+          archive=hermes-rebuild-kit-v1.2.0.tar.gz
+          mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
+          test "${#parts[@]}" -eq 7
+          cat "${parts[@]}" | base64 --decode > "/tmp/$archive"
+          (
+            cd /tmp
+            grep "  $archive$" "$GITHUB_WORKSPACE/SHA256SUMS" | sha256sum --check --strict -
+          )
+          rm -rf /tmp/hermes-git-cwd-diagnostic
+          mkdir -p /tmp/hermes-git-cwd-diagnostic
+          tar -xzf "/tmp/$archive" -C /tmp/hermes-git-cwd-diagnostic
+          cd /tmp/hermes-git-cwd-diagnostic/hermes-rebuild-kit
+          sha256sum --check --strict MANIFEST.sha256
+          echo '--- runner and user-command helpers ---'
+          grep -n -C 35 -E '^class CommandRunner|def run_user|def run\(|def user_env|safe.directory|git config --global' \
+            bin/hermes_rebuild.py || true
+          echo '--- repository clone/update helpers ---'
+          grep -n -C 45 -E 'def clone|def ensure_repo|safe.directory|git config' \
+            bin/hermes_rebuild.py || true
+          echo '--- related tests ---'
+          grep -n -C 20 -E 'safe.directory|run_user|root-owned|working directory|cwd' \
+            tests/regression_v120_test.py tests/e2e_test.py tests/smoke_test.py || true
