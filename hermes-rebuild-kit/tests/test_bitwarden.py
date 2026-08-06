@@ -55,3 +55,38 @@ def test_explicit_item_mapping_is_used():
 
     assert resolved.value == "test-secret"
     assert resolved.metadata["item_id"] == "primary-openrouter"
+
+
+def test_notes_are_not_used_as_credentials_by_default():
+    p = BitwardenProvider(
+        ProviderConfig(
+            backend="bitwarden",
+            folder="AI & LLM/API Keys/Active",
+        )
+    )
+
+    value, credential_type = p._extract_value(
+        {"notes": "not-an-api-key-source"},
+        "runpod",
+    )
+
+    assert value is None
+    assert credential_type.value == "api_key"
+
+
+def test_notes_can_be_enabled_explicitly():
+    p = BitwardenProvider(
+        ProviderConfig(
+            backend="bitwarden",
+            folder="AI & LLM/API Keys/Active",
+            options={"allow_notes_credentials": True},
+        )
+    )
+
+    value, credential_type = p._extract_value(
+        {"notes": "structured-test-value"},
+        "structured_record",
+    )
+
+    assert value == "structured-test-value"
+    assert credential_type.value == "structured"

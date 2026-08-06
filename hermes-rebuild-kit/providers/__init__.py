@@ -1,9 +1,17 @@
-from .aliases import AliasResolver, normalize_alias
 from .bitwarden import BitwardenProvider
-from .manifest import load_manifest
-from .models import *
-from .provider import SecretProvider
-from .registry import ProviderRegistry, FakeProvider
+from .registry import ProviderRegistry
 
-if "bitwarden" not in ProviderRegistry._factories:
-    ProviderRegistry.register("bitwarden", BitwardenProvider, default=True)
+try:
+    ProviderRegistry.register(
+        "bitwarden",
+        BitwardenProvider,
+        default=True,
+    )
+except Exception as exc:
+    if "already registered" not in str(exc):
+        raise
+
+__all__ = [
+    "BitwardenProvider",
+    "ProviderRegistry",
+]

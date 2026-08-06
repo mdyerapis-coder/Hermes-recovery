@@ -9,7 +9,7 @@ umask 077
 
 REPO="${HERMES_RECOVERY_REPO:-mdyerapis-coder/Hermes-recovery}"
 REF="${HERMES_RECOVERY_REF:-main}"
-KIT_VERSION="${HERMES_RECOVERY_VERSION:-1.1.0}"
+KIT_VERSION="${HERMES_RECOVERY_VERSION:-1.2.0}"
 INSTALL_BASE="${HERMES_RECOVERY_INSTALL_BASE:-/opt/hermes-recovery-kit}"
 ARCHIVE_NAME="hermes-rebuild-kit-v${KIT_VERSION}.tar.gz"
 BASE_URL="${HERMES_RECOVERY_BASE_URL:-https://raw.githubusercontent.com/${REPO}/${REF}}"
@@ -29,7 +29,7 @@ Unattended recovery:
 Environment overrides:
   HERMES_RECOVERY_REPO=owner/repository
   HERMES_RECOVERY_REF=branch|tag|commit
-  HERMES_RECOVERY_VERSION=1.1.0
+  HERMES_RECOVERY_VERSION=1.2.0
   HERMES_RECOVERY_INSTALL_BASE=/opt/hermes-recovery-kit
   HERMES_RECOVERY_BASE_URL=https://mirror/path
   HERMES_RECOVERY_ARCHIVE_URL=https://mirror/path/kit.tar.gz

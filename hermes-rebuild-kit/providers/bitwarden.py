@@ -61,7 +61,10 @@ class BitwardenProvider(SecretProvider):
         for field in item.get("fields") or []:
             if str(field.get("name", "")).lower() in {"api key", "token", "secret", alias.lower()} and field.get("value"):
                 return field["value"], CredentialType.API_KEY
-        if item.get("notes"):
+        allow_notes = bool(
+            self.config.options.get("allow_notes_credentials", False)
+        )
+        if allow_notes and item.get("notes"):
             return item["notes"].strip(), CredentialType.STRUCTURED
         return None, CredentialType.API_KEY
 

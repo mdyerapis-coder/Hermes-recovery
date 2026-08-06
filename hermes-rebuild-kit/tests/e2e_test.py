@@ -280,7 +280,7 @@ def test_mobile_loader_download_and_verification() -> None:
         bad_sums = webroot / "bad-SHA256SUMS"
         make_archive(ROOT, good, False)
         make_archive(ROOT, bad, True)
-        archive_name = "hermes-rebuild-kit-v1.1.0.tar.gz"
+        archive_name = "hermes-rebuild-kit-v1.2.0.tar.gz"
         good_sums.write_text(f"{hashlib.sha256(good.read_bytes()).hexdigest()}  {archive_name}\n")
         bad_sums.write_text(f"{hashlib.sha256(bad.read_bytes()).hexdigest()}  {archive_name}\n")
         shutil.copy2(good_sums, webroot / "SHA256SUMS")
