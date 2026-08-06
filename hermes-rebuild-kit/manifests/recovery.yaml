@@ -4,9 +4,6 @@ secrets:
   required: []
 
   optional:
-    - alias: google_ai
-      purpose: alternate_llm
-
     - alias: openrouter
       purpose: fallback_llm
 
@@ -15,6 +12,3 @@ secrets:
 
     - alias: opencode_go
       purpose: coding_provider
-
-    - alias: runpod
-      purpose: compute_provider
