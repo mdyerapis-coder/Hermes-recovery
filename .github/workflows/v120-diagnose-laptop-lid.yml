@@ -34,13 +34,10 @@ jobs:
           tar -xzf "/tmp/$archive" -C /tmp/hermes-lid-diagnostic
           cd /tmp/hermes-lid-diagnostic/hermes-rebuild-kit
           sha256sum --check --strict MANIFEST.sha256
-          echo '--- stage_laptop_lid source ---'
-          start="$(grep -n -m1 'def stage_laptop_lid' bin/hermes_rebuild.py | cut -d: -f1)"
-          test -n "$start"
-          begin=$((start > 15 ? start - 15 : 1))
-          end=$((start + 150))
-          nl -ba bin/hermes_rebuild.py | sed -n "${begin},${end}p"
-          echo '--- related regression coverage ---'
-          grep -n -C 10 -E 'laptop_lid|laptop-lid|systemd-inhibit|FUNCTIONS=' \
+          echo '--- controller lines 1560-1685 ---'
+          nl -ba bin/hermes_rebuild.py | sed -n '1560,1685p'
+          echo '--- all laptop-lid references ---'
+          grep -n -C 12 -E 'laptop_lid|laptop-lid|systemd-inhibit|FUNCTIONS=' \
+            bin/hermes_rebuild.py \
             tests/regression_v120_test.py tests/e2e_test.py tests/smoke_test.py \
             || true
