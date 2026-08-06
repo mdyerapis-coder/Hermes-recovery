@@ -1,4 +1,4 @@
-name: Diagnose v1.2.0 laptop lid stage
+name: Diagnose v1.2.0 OpenSSH stage
 
 on:
   pull_request:
@@ -29,15 +29,15 @@ jobs:
             grep "  $archive$" "$GITHUB_WORKSPACE/SHA256SUMS" \
               | sha256sum --check --strict -
           )
-          rm -rf /tmp/hermes-lid-diagnostic
-          mkdir -p /tmp/hermes-lid-diagnostic
-          tar -xzf "/tmp/$archive" -C /tmp/hermes-lid-diagnostic
-          cd /tmp/hermes-lid-diagnostic/hermes-rebuild-kit
+          rm -rf /tmp/hermes-sshd-diagnostic
+          mkdir -p /tmp/hermes-sshd-diagnostic
+          tar -xzf "/tmp/$archive" -C /tmp/hermes-sshd-diagnostic
+          cd /tmp/hermes-sshd-diagnostic/hermes-rebuild-kit
           sha256sum --check --strict MANIFEST.sha256
-          echo '--- controller lines 1560-1685 ---'
-          nl -ba bin/hermes_rebuild.py | sed -n '1560,1685p'
-          echo '--- all laptop-lid references ---'
-          grep -n -C 12 -E 'laptop_lid|laptop-lid|systemd-inhibit|FUNCTIONS=' \
-            bin/hermes_rebuild.py \
+          echo '--- all OpenSSH controller references ---'
+          grep -n -C 30 -E 'configure_openssh|sshd -t|ssh-keygen|HostKey|openssh' \
+            bin/hermes_rebuild.py || true
+          echo '--- related tests ---'
+          grep -n -C 20 -E 'configure_openssh|sshd -t|ssh-keygen|HostKey|openssh' \
             tests/regression_v120_test.py tests/e2e_test.py tests/smoke_test.py \
             || true
