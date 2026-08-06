@@ -1,0 +1,19 @@
+# Additional project recovery manifest.
+# This file is intentionally empty by default. Enable entries only after the
+# source, ref, install commands and health behaviour have been reviewed.
+projects: []
+
+# Example:
+# projects:
+#   - name: home-hub
+#     enabled: true
+#     source:
+#       type: git
+#       url: https://github.com/OWNER/home-hub.git
+#       ref: 0123456789abcdef0123456789abcdef01234567
+#     # Commands are argv arrays, not shell strings. This prevents accidental
+#     # shell interpolation and makes state/audit output deterministic.
+#     install:
+#       - ["corepack", "enable"]
+#       - ["pnpm", "install", "--frozen-lockfile"]
+#       - ["pnpm", "build"]

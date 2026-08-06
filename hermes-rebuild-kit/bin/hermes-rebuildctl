@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+KIT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+case "${1:-}" in
+  health) shift; exec sudo "$KIT_ROOT/bootstrap.sh" --health "$@" ;;
+  summary) shift; exec sudo "$KIT_ROOT/bootstrap.sh" --summary "$@" ;;
+  rollback) shift; exec sudo "$KIT_ROOT/bootstrap.sh" --rollback "${1:-latest}" ;;
+  plan) shift; exec sudo "$KIT_ROOT/bootstrap.sh" --plan "$@" ;;
+  *) echo "Usage: hermes-rebuildctl {health|summary|rollback [ID]|plan} [options]" >&2; exit 64 ;;
+esac

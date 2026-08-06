@@ -1,0 +1,10 @@
+project: recovery
+secrets:
+  required:
+    - alias: bitwarden
+      purpose: vault_access
+  optional:
+    - alias: tailscale
+      purpose: network_access
+    - alias: telegram
+      purpose: messaging

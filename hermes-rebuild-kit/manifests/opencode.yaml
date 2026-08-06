@@ -1,0 +1,21 @@
+project: opencode
+aliases:
+  zen: opencode_zen
+  go: opencode_go
+secrets:
+  required: []
+  optional:
+    - alias: opencode
+      purpose: opencode_auth
+    - alias: opencode_zen
+      purpose: coding_provider
+    - alias: opencode_go
+      purpose: coding_provider
+    - alias: openrouter
+      purpose: fallback_llm
+    - alias: openai
+      purpose: coding_provider
+    - alias: anthropic
+      purpose: alternate_provider
+    - alias: google_ai
+      purpose: alternate_provider
