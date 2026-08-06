@@ -1,0 +1,204 @@
+name: v1.2.0 rebuild payload for disabled Tailscale v2
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v120-rebuild-disabled-tailscale-v2.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v120-disabled-tailscale-release-rebuild-v2
+  cancel-in-progress: false
+
+env:
+  RELEASE_BRANCH: agent/bitwarden-smart-resume-v1.2.0-final
+  ARCHIVE_NAME: hermes-rebuild-kit-v1.2.0.tar.gz
+
+jobs:
+  rebuild:
+    name: Patch, test, sign and publish disabled-Tailscale fix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out release-candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Install test dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-yaml
+
+      - name: Rebuild and atomically publish verified payload
+        run: |
+          set -Eeuo pipefail
+          work="$(mktemp -d)"
+          trap 'sudo rm -rf "$work"' EXIT
+          mkdir -p "$work/source" "$work/payload" "$work/pycache"
+
+          mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
+          test "${#parts[@]}" -eq 7
+          for index in "${!parts[@]}"; do
+            printf -v expected 'payload/%s.b64.part-%03d' "$ARCHIVE_NAME" "$index"
+            test "${parts[$index]}" = "$expected"
+            test -s "${parts[$index]}"
+          done
+
+          cat "${parts[@]}" | base64 --decode > "$work/current.tar.gz"
+          (
+            cd "$work"
+            grep "  $ARCHIVE_NAME$" "$GITHUB_WORKSPACE/SHA256SUMS" \
+              | sed "s#  $ARCHIVE_NAME#  current.tar.gz#" \
+              | sha256sum --check --strict -
+          )
+          tar -xzf "$work/current.tar.gz" -C "$work/source"
+          kit="$work/source/hermes-rebuild-kit"
+          (
+            cd "$kit"
+            sha256sum --check --strict MANIFEST.sha256
+          )
+
+          python3 - "$kit" <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          controller = root / "bin" / "hermes_rebuild.py"
+          source = controller.read_text()
+
+          old_connected = '''def _tailscale_connected(ctx: Context) -> bool:
+              result = ctx.runner.run(["tailscale", "status", "--json"], check=False, capture=True, quiet=True)
+          '''
+          new_connected = '''def _tailscale_connected(ctx: Context) -> bool:
+              if not shutil.which("tailscale"):
+                  return False
+              result = ctx.runner.run(["tailscale", "status", "--json"], check=False, capture=True, quiet=True)
+          '''
+          old_ip = '''def tailscale_ipv4(ctx: Context) -> str:
+              result = ctx.runner.run(["tailscale", "ip", "-4"], check=False, capture=True, quiet=True)
+          '''
+          new_ip = '''def tailscale_ipv4(ctx: Context) -> str:
+              if not shutil.which("tailscale"):
+                  return ""
+              result = ctx.runner.run(["tailscale", "ip", "-4"], check=False, capture=True, quiet=True)
+          '''
+          for old, new, label in (
+              (old_connected, new_connected, "Tailscale status helper"),
+              (old_ip, new_ip, "Tailscale IP helper"),
+          ):
+              if source.count(old) != 1:
+                  raise SystemExit(f"unexpected {label} block")
+              source = source.replace(old, new)
+          controller.write_text(source)
+
+          regression = root / "tests" / "regression_v120_test.py"
+          source = regression.read_text()
+          marker = "def test_bitwarden_exact_folder_parser_and_stale_replacement() -> None:\n"
+          addition = '''def test_disabled_tailscale_helpers_do_not_invoke_missing_binary() -> None:
+              connected = inspect.getsource(module._tailscale_connected)
+              address = inspect.getsource(module.tailscale_ipv4)
+              assert 'shutil.which("tailscale")' in connected
+              assert 'shutil.which("tailscale")' in address
+              assert "return False" in connected
+              assert 'return ""' in address
+
+
+          '''
+          if source.count(marker) != 1:
+              raise SystemExit("unexpected Tailscale regression insertion marker")
+          source = source.replace(marker, addition + marker)
+
+          call = "    test_git_safe_directory_uses_runtime_home_as_cwd()\n"
+          if source.count(call) != 1:
+              raise SystemExit("unexpected Tailscale regression main marker")
+          source = source.replace(
+              call,
+              call + "    test_disabled_tailscale_helpers_do_not_invoke_missing_binary()\n",
+          )
+          regression.write_text(source)
+          PY
+
+          (
+            cd "$kit"
+            find . -type d -name __pycache__ -prune -exec rm -rf {} +
+            find . -type f ! -name MANIFEST.sha256 -printf '%P\0' \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > MANIFEST.sha256
+            sha256sum --check --strict MANIFEST.sha256
+            bash -n install.sh bootstrap.sh bin/hermes-rebuildctl tests/run.sh
+            sudo env \
+              PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONPYCACHEPREFIX="$work/pycache" \
+              ./tests/run.sh
+            find . -type d -name __pycache__ -prune -exec rm -rf {} +
+            sha256sum --check --strict MANIFEST.sha256
+            for executable in \
+              install.sh bootstrap.sh bin/hermes-rebuildctl bin/hermes_rebuild.py \
+              tests/run.sh tests/smoke_test.py tests/e2e_test.py tests/regression_v120_test.py; do
+              test "$(stat -c '%a' "$executable")" = 755
+            done
+          )
+
+          (
+            cd "$work/source"
+            tar \
+              --sort=name \
+              --mtime='2026-08-05 00:00:00Z' \
+              --owner=0 \
+              --group=0 \
+              --numeric-owner \
+              --format=gnu \
+              -cf "$work/release.tar" hermes-rebuild-kit
+          )
+          gzip -n -9 -c "$work/release.tar" > "$work/$ARCHIVE_NAME"
+          archive_sha="$(sha256sum "$work/$ARCHIVE_NAME" | awk '{print $1}')"
+          printf 'published archive SHA-256: %s\n' "$archive_sha"
+
+          base64 -w0 "$work/$ARCHIVE_NAME" > "$work/$ARCHIVE_NAME.b64"
+          split \
+            --number=7 \
+            --numeric-suffixes=0 \
+            --suffix-length=3 \
+            "$work/$ARCHIVE_NAME.b64" \
+            "$work/payload/$ARCHIVE_NAME.b64.part-"
+          test "$(find "$work/payload" -maxdepth 1 -type f | wc -l)" -eq 7
+          for index in $(seq 0 6); do
+            printf -v part '%s/payload/%s.b64.part-%03d' "$work" "$ARCHIVE_NAME" "$index"
+            test -s "$part"
+          done
+          cat "$work"/payload/*.part-* | base64 --decode > "$work/reconstructed.tar.gz"
+          cmp "$work/$ARCHIVE_NAME" "$work/reconstructed.tar.gz"
+          test "$(sha256sum "$work/reconstructed.tar.gz" | awk '{print $1}')" = "$archive_sha"
+
+          rm -rf "$work/verify"
+          mkdir -p "$work/verify"
+          tar -xzf "$work/reconstructed.tar.gz" -C "$work/verify"
+          (
+            cd "$work/verify/hermes-rebuild-kit"
+            sha256sum --check --strict MANIFEST.sha256
+            sudo env \
+              PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONPYCACHEPREFIX="$work/verify-pycache" \
+              ./tests/run.sh
+          )
+
+          printf '%s  %s\n' "$archive_sha" "$ARCHIVE_NAME" > SHA256SUMS
+          rm -f payload/$ARCHIVE_NAME.b64.part-*
+          cp "$work"/payload/$ARCHIVE_NAME.b64.part-* payload/
+
+          cat "${parts[@]}" | base64 --decode > "$work/repo-reconstruction.tar.gz"
+          test "$(sha256sum "$work/repo-reconstruction.tar.gz" | awk '{print $1}')" = "$archive_sha"
+
+          git config user.name 'Hermes Recovery CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add SHA256SUMS payload/$ARCHIVE_NAME.b64.part-*
+          git diff --cached --check
+          git commit -m 'fix: skip disabled Tailscale commands'
+          git push origin "HEAD:$RELEASE_BRANCH"
