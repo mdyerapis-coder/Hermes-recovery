@@ -1,18 +1,20 @@
 project: recovery
+
 secrets:
   required: []
+
   optional:
-    - alias: tailscale
-      purpose: network_access
-    - alias: telegram
-      purpose: messaging
-    - alias: openai
-      purpose: primary_llm
+    - alias: google_ai
+      purpose: alternate_llm
+
     - alias: openrouter
       purpose: fallback_llm
+
     - alias: opencode
       purpose: coding_provider
-    - alias: opencode_zen
-      purpose: coding_provider
+
     - alias: opencode_go
       purpose: coding_provider
+
+    - alias: runpod
+      purpose: compute_provider

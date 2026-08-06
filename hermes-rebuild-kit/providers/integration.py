@@ -34,6 +34,7 @@ def load_provider_config(path: str | Path) -> ProviderConfig | None:
         "cache",
         "validate",
         "fail_closed",
+        "items",
     }
     unknown = set(raw) - allowed
     if unknown:

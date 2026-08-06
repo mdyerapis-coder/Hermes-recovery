@@ -76,6 +76,7 @@ class ProviderConfig:
     cache: str = "session"
     validate: bool = True
     fail_closed: bool = True
+    items: Mapping[str, str] = field(default_factory=dict)
     options: Mapping[str, Any] = field(default_factory=dict)
 
 @dataclass(frozen=True)

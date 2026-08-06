@@ -65,20 +65,115 @@ class BitwardenProvider(SecretProvider):
             return item["notes"].strip(), CredentialType.STRUCTURED
         return None, CredentialType.API_KEY
 
+    @staticmethod
+    def _normalise_name(value: str) -> str:
+        return "_".join(
+            part
+            for part in value.strip().lower()
+            .replace("-", "_")
+            .replace("/", "_")
+            .replace(" ", "_")
+            .split("_")
+            if part
+        )
+
+    def _folder_id(self) -> str:
+        configured = self.config.folder.strip("/")
+        if not configured:
+            raise ProviderConfigurationError(
+                "Bitwarden folder must not be empty"
+            )
+
+        folders = json.loads(self._run("list", "folders"))
+        exact = [
+            folder
+            for folder in folders
+            if str(folder.get("name", "")).strip("/") == configured
+        ]
+
+        if not exact:
+            raise ProviderConfigurationError(
+                f"configured Bitwarden folder was not found: {configured}"
+            )
+
+        if len(exact) > 1:
+            raise ProviderConfigurationError(
+                f"configured Bitwarden folder is ambiguous: {configured}"
+            )
+
+        folder_id = str(exact[0].get("id") or "").strip()
+        if not folder_id:
+            raise ProviderConfigurationError(
+                f"configured Bitwarden folder has no ID: {configured}"
+            )
+
+        return folder_id
+
     def _resolve(self, canonical_alias):
-        folder = self.config.folder.strip("/")
-        results = json.loads(self._run("list", "items", "--search", canonical_alias))
-        candidates = []
+        folder_id = self._folder_id()
+
+        configured_name = self.config.items.get(
+            canonical_alias,
+            canonical_alias,
+        )
+
+        results = json.loads(
+            self._run(
+                "list",
+                "items",
+                "--search",
+                configured_name,
+                "--folderid",
+                folder_id,
+            )
+        )
+
+        canonical = self._normalise_name(configured_name)
+        exact = []
+        partial = []
+
         for item in results:
-            name = str(item.get("name", "")).lower().replace("-", "_").replace(" ", "_")
-            if canonical_alias not in name:
+            name = self._normalise_name(str(item.get("name", "")))
+
+            if str(item.get("folderId") or "") != folder_id:
                 continue
-            folder_name = str(item.get("folderId") or "")
-            candidates.append(item)
+
+            if name == canonical:
+                exact.append(item)
+            elif canonical in name or name in canonical:
+                partial.append(item)
+
+        candidates = exact or partial
+
         if not candidates:
-            raise SecretNotFoundError(f"secret not found for alias {canonical_alias}")
+            raise SecretNotFoundError(
+                f"secret not found for alias {canonical_alias}"
+            )
+
+        if len(candidates) > 1:
+            raise ProviderConfigurationError(
+                f"multiple Bitwarden items matched alias {canonical_alias}"
+            )
+
         item = candidates[0]
         value, ctype = self._extract_value(item, canonical_alias)
+
         if value is None:
-            raise SecretNotFoundError(f"secret item has no usable credential for alias {canonical_alias}")
-        return ResolvedSecret(canonical_alias, value, ctype, provider_name=canonical_alias, account_name=item.get("name"), source_backend="bitwarden", validation_method="presence")
+            raise SecretNotFoundError(
+                f"secret item has no usable credential for alias "
+                f"{canonical_alias}"
+            )
+
+        return ResolvedSecret(
+            canonical_alias,
+            value,
+            ctype,
+            provider_name=canonical_alias,
+            account_name=item.get("name"),
+            source_backend="bitwarden",
+            validation_method="presence",
+            metadata={
+                "item_id": item.get("id"),
+                "folder_id": folder_id,
+            },
+        )
