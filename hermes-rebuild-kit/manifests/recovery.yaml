@@ -1,0 +1,14 @@
+project: recovery
+
+secrets:
+  required: []
+
+  optional:
+    - alias: openrouter
+      purpose: fallback_llm
+
+    - alias: opencode
+      purpose: coding_provider
+
+    - alias: opencode_go
+      purpose: coding_provider

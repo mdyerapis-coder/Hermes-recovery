@@ -1,0 +1,125 @@
+# All-in-One Hermes Rebuild configuration
+# Copy to /root/hermes-recovery.yaml, chmod 600, then edit.
+server:
+  type: auto                    # auto | bare-metal | vps | cloud-vm
+  ram_gb: auto
+  vram_gb: auto
+  deployment_mode: production  # development | production
+  timezone: Australia/Melbourne
+  expected_hostname: hermes-station
+  enforce_grounding: true
+  # Required for a clean Fedora install whose temporary hostname is not yet
+  # hermes-station. The retired hostname hada-control is always rejected.
+  allow_hostname_change: true
+  forbidden_hostnames: [hada-control]
+
+runtime:
+  user: bobthabuilda
+  install_root: /opt/hermes-stack
+  state_dir: /etc/hermes-rebuild
+  backup_root: /var/backups/hermes-rebuild
+
+versions:
+  # Hermes currently requires Python >=3.11,<3.14; 3.13 is the recovery default.
+  python: auto
+  node_major: auto
+  nvidia_container_toolkit: "1.19.1-1"
+  claude_code: latest-on-first-install
+  codex_cli: latest-on-first-install
+
+repositories:
+  hermes:
+    url: https://github.com/mdyerapis-coder/hermes-agent.git
+    ref: d71033a4077a6dfdcdb42c9e9eeab4c41e4a7012
+  hada:
+    url: https://github.com/mdyerapis-coder/hada.git
+    ref: 9e1b3d0e098bc46d6d866b1ce8395cda3dde063d
+  agent_forge:
+    url: https://github.com/mdyerapis-coder/agent-forge-e2e.git
+    ref: main
+    allow_empty: true
+    allow_mutable_ref: true  # only because this repository currently has no commit
+    # Replace this with the real, tested Agent Forge CLI argv after restoring
+    # the actual source. Never put secrets in this command.
+    command: []
+
+components:
+  host_grounding: true
+  openssh: true
+  firewall: true
+  tailscale: true
+  laptop_lid_protection: true
+  docker: true
+  nvidia_container_toolkit: auto
+  hermes: true
+  hada: true
+  agent_forge: true
+  claude_code: true
+  codex_cli: true
+  gateway_service: true
+
+network:
+  tailscale:
+    enable_ssh: true
+    hostname: hermes-station
+    operator: bobthabuilda
+    accept_dns: true
+    accept_routes: false
+  ssh:
+    # Public SSH is removed from firewalld only after Tailscale is confirmed
+    # connected. Until then the existing public rule is preserved to avoid lockout.
+    tailscale_only: true
+    password_authentication: preserve  # preserve | yes | no
+    permit_root_login: prohibit-password
+
+power:
+  # On detected laptops this writes a systemd-logind drop-in and starts an
+  # inhibitor service so lid-close and desktop idle cannot suspend the station.
+  always_on: true
+  laptop_lid_policy: auto       # auto | ignore | unchanged | suspend
+  install_inhibitor_service: true
+
+auth:
+  claude_code_oauth: true
+  chatgpt_codex_oauth: true
+  # Non-interactive runs record OAuth as a manual action. Browser/device
+  # authorisation is never automated or copied into rebuild state.
+  run_oauth_during_interactive_recovery: true
+
+hermes:
+  home: auto
+  provider: openai-codex
+  model: gpt-5.6-sol
+  gateway_watchdog_seconds: 120
+  enable_telegram: true
+
+hada:
+  run_local_tests: true
+  run_preflight: true
+  # Fail closed. Repository-native phase gates remain mandatory.
+  allow_deployment: false
+
+agent_forge:
+  timeout_seconds: 3600
+  max_parallel: 1
+  require_git_worktree: true
+
+projects_manifest: auto
+
+# Literal secret values are rejected. Use env:NAME or a root-only file.
+secrets:
+  OPENAI_API_KEY: ""                 # optional with ChatGPT/Codex OAuth
+  ANTHROPIC_API_KEY: ""              # optional with Claude Code OAuth
+  OPENROUTER_API_KEY: env?:OPENROUTER_API_KEY
+  HF_TOKEN: env?:HF_TOKEN
+  GITHUB_TOKEN: env?:GITHUB_TOKEN
+  TELEGRAM_BOT_TOKEN: env?:TELEGRAM_BOT_TOKEN
+  TELEGRAM_ALLOWED_USERS: env?:TELEGRAM_ALLOWED_USERS
+  # Prefer a one-off, pre-authorised key. It is passed to Tailscale through a
+  # temporary 0600 file and shredded after use.
+  TAILSCALE_AUTH_KEY: env?:TAILSCALE_AUTH_KEY
+  # Full OpenSSH public key only; never provide a private key here.
+  SSH_AUTHORIZED_KEY: env?:SSH_AUTHORIZED_KEY
+  # Generated once and retained across reruns when omitted:
+  # POSTGRES_PASSWORD: file:/root/secrets/postgres-password
+  # HERMES_WEBHOOK_TOKEN: file:/root/secrets/hermes-webhook-token

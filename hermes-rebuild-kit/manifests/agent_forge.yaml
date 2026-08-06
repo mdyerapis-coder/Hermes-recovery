@@ -1,0 +1,12 @@
+project: agent_forge
+secrets:
+  required:
+    - alias: github
+      purpose: repository_access
+  optional:
+    - alias: openrouter
+      purpose: fallback_llm
+    - alias: runpod
+      purpose: compute_provider
+    - alias: vast_ai
+      purpose: compute_provider

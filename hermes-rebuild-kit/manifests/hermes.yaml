@@ -1,0 +1,12 @@
+project: hermes
+secrets:
+  required:
+    - alias: openai
+      purpose: primary_llm
+    - alias: github
+      purpose: repository_access
+  optional:
+    - alias: openrouter
+      purpose: fallback_llm
+    - alias: telegram
+      purpose: messaging

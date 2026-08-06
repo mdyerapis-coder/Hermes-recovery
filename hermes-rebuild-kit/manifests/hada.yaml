@@ -1,0 +1,10 @@
+project: hada
+secrets:
+  required:
+    - alias: github
+      purpose: repository_access
+  optional:
+    - alias: openai
+      purpose: coding_provider
+    - alias: anthropic
+      purpose: alternate_provider
