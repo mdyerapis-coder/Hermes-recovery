@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,6 +128,19 @@ class ProviderTests(unittest.TestCase):
         resolution = provider.resolve(openai)
         self.assertEqual(resolution.value, "sk-test-123456789")
         self.assertNotIn(resolution.value, resolution.item_name)
+
+
+class BitwardenInstallerTests(unittest.TestCase):
+    def test_checksum_parser(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "checksum.txt"
+            path.write_text("a" * 64 + "  bw-linux-2026.4.2.zip\n")
+            module_path = ROOT / "overlay" / "bin" / "install_bw_cli.py"
+            spec = importlib.util.spec_from_file_location("install_bw_cli", module_path)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            self.assertEqual(module.parse_checksum(path, "bw-linux-2026.4.2.zip"), "a" * 64)
 
 
 if __name__ == "__main__":
