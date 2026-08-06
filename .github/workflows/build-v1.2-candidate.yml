@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/hsp-bitwarden-v1.2
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -11,12 +14,13 @@ permissions:
 
 jobs:
   build-and-publish:
-    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip release build]') }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || !contains(github.event.head_commit.message, '[skip release build]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
 
       - uses: actions/setup-python@v5
         with:
@@ -92,4 +96,4 @@ Secret values are not printed or written into the recovery manifest. See
             exit 0
           fi
           git commit -m 'Publish Hermes recovery v1.2.0 candidate [skip release build]'
-          git push
+          git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
