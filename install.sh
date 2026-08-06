@@ -9,7 +9,7 @@ umask 077
 
 REPO="${HERMES_RECOVERY_REPO:-mdyerapis-coder/Hermes-recovery}"
 REF="${HERMES_RECOVERY_REF:-main}"
-KIT_VERSION="${HERMES_RECOVERY_VERSION:-1.1.0}"
+KIT_VERSION="${HERMES_RECOVERY_VERSION:-1.2.0}"
 INSTALL_BASE="${HERMES_RECOVERY_INSTALL_BASE:-/opt/hermes-recovery-kit}"
 ARCHIVE_NAME="hermes-rebuild-kit-v${KIT_VERSION}.tar.gz"
 BASE_URL="${HERMES_RECOVERY_BASE_URL:-https://raw.githubusercontent.com/${REPO}/${REF}}"
@@ -29,7 +29,7 @@ Unattended recovery:
 Environment overrides:
   HERMES_RECOVERY_REPO=owner/repository
   HERMES_RECOVERY_REF=branch|tag|commit
-  HERMES_RECOVERY_VERSION=1.1.0
+  HERMES_RECOVERY_VERSION=1.2.0
   HERMES_RECOVERY_INSTALL_BASE=/opt/hermes-recovery-kit
   HERMES_RECOVERY_BASE_URL=https://mirror/path
   HERMES_RECOVERY_ARCHIVE_URL=https://mirror/path/kit.tar.gz
@@ -51,7 +51,7 @@ if [[ ${EUID:-$(id -u)} -ne 0 && "${HERMES_RECOVERY_ALLOW_UNPRIVILEGED_TEST:-0}"
   exit 77
 fi
 
-for command in curl tar sha256sum base64 python3; do
+for command in curl tar sha256sum base64 awk; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "ERROR: required command is missing: $command" >&2
     exit 69
@@ -81,33 +81,69 @@ curl_security=(--proto '=https' --tlsv1.2)
 if [[ "${HERMES_RECOVERY_ALLOW_INSECURE_TEST_URL:-0}" == "1" ]]; then
   curl_security=()
 fi
-curl_common=("${curl_security[@]}" --fail --location --silent --show-error --retry 4 --retry-all-errors --connect-timeout 20)
+curl_retry="${HERMES_RECOVERY_CURL_RETRY:-4}"
+curl_connect_timeout="${HERMES_RECOVERY_CONNECT_TIMEOUT:-20}"
+[[ "$curl_retry" =~ ^[0-9]+$ && "$curl_connect_timeout" =~ ^[1-9][0-9]*$ ]] || {
+  echo "ERROR: invalid curl retry/connect-timeout override" >&2
+  exit 64
+}
+curl_common=("${curl_security[@]}" --fail --location --silent --show-error --retry "$curl_retry" --retry-all-errors --connect-timeout "$curl_connect_timeout")
 
 echo "Downloading verified Hermes recovery kit v${KIT_VERSION} ..."
+reconstruct_payload() {
+  local parts_file="$work/parts.txt"
+  local encoded="$work/${ARCHIVE_NAME}.b64"
+  local part_file part expected_part
+  local -a parts=()
+  local expected_count="${HERMES_RECOVERY_PART_COUNT:-7}"
+
+  [[ "$expected_count" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: HERMES_RECOVERY_PART_COUNT must be a positive integer" >&2
+    exit 64
+  }
+  curl "${curl_common[@]}" "${BASE_URL}/payload/parts.txt" -o "$parts_file"
+  while IFS= read -r part || [[ -n "$part" ]]; do
+    [[ -z "$part" || "$part" == \#* ]] && continue
+    parts+=("$part")
+  done < "$parts_file"
+  [[ "${#parts[@]}" -eq "$expected_count" ]] || {
+    echo "ERROR: payload index lists ${#parts[@]} parts; expected $expected_count" >&2
+    exit 65
+  }
+
+  : > "$encoded"
+  for ((i=0; i<expected_count; i++)); do
+    printf -v expected_part 'payload/%s.b64.part-%03d' "$ARCHIVE_NAME" "$i"
+    part="${parts[$i]}"
+    [[ "$part" == "$expected_part" ]] || {
+      echo "ERROR: payload index is incomplete or out of order at part $i: expected $expected_part, got $part" >&2
+      exit 65
+    }
+    part_file="$work/part-$i"
+    if ! curl "${curl_common[@]}" "${BASE_URL}/${part}" -o "$part_file"; then
+      echo "ERROR: required payload part is unavailable: $part" >&2
+      exit 65
+    fi
+    [[ -s "$part_file" ]] || {
+      echo "ERROR: required payload part is empty: $part" >&2
+      exit 65
+    }
+    cat "$part_file" >> "$encoded"
+  done
+  base64 --decode "$encoded" > "$archive" || {
+    echo "ERROR: payload parts did not decode into a valid archive byte stream" >&2
+    exit 65
+  }
+}
+
 if [[ -n "${HERMES_RECOVERY_ARCHIVE_URL:-}" ]]; then
   curl "${curl_common[@]}" "$ARCHIVE_URL" -o "$archive"
 elif curl "${curl_common[@]}" "$ARCHIVE_URL" -o "$archive"; then
-  : # Preferred path: download the versioned archive directly from the repository.
+  : # Prefer a directly published archive when a release provides one.
 else
-  echo "Direct archive download unavailable; reconstructing verified payload parts ..." >&2
-  parts_file="$work/parts.txt"
-  encoded="$work/${ARCHIVE_NAME}.b64"
+  echo "Direct archive unavailable; reconstructing the ordered payload parts ..." >&2
   rm -f -- "$archive"
-  curl "${curl_common[@]}" "${BASE_URL}/payload/parts.txt" -o "$parts_file"
-  : > "$encoded"
-  while IFS= read -r part || [[ -n "$part" ]]; do
-    [[ -z "$part" || "$part" == \#* ]] && continue
-    [[ "$part" =~ ^payload/${ARCHIVE_NAME}\.b64\.part-[0-9]{3}$ ]] || {
-      echo "ERROR: invalid payload part name: $part" >&2
-      exit 65
-    }
-    curl "${curl_common[@]}" "${BASE_URL}/${part}" >> "$encoded"
-  done < "$parts_file"
-  [[ -s "$encoded" ]] || {
-    echo "ERROR: no recovery payload parts were downloaded" >&2
-    exit 65
-  }
-  base64 --decode "$encoded" > "$archive"
+  reconstruct_payload
 fi
 
 expected="${HERMES_RECOVERY_EXPECTED_SHA256:-}"
@@ -149,47 +185,6 @@ embedded_version="$(tr -d '[:space:]' < "$source_dir/VERSION")"
   echo "ERROR: archive version $embedded_version does not match requested $KIT_VERSION" >&2
   exit 65
 }
-
-# Emergency Fedora 41+ compatibility hotfixes for recovery kit 1.1.0.
-# The signed archive and internal manifest are verified before these exact,
-# auditable source transformations are applied.
-if [[ "$embedded_version" == "1.1.0" ]]; then
-  python3 - "$source_dir/bin/hermes_rebuild.py" <<'PYHOTFIX'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-
-dnf4 = 'ctx.runner.run(["dnf", "config-manager", "--add-repo", repo_url])'
-dnf5 = 'ctx.runner.run(["dnf", "config-manager", "addrepo", f"--from-repofile={repo_url}"])'
-if dnf4 in text:
-    text = text.replace(dnf4, dnf5, 1)
-elif dnf5 not in text:
-    raise SystemExit("ERROR: DNF5 hotfix target was not found; refusing to continue")
-
-npm_old = """    prefix = pathlib.Path("/opt/hermes-tools/npm")
-    uid, gid = user_ids(ctx.runtime_user)
-    prefix.mkdir(parents=True, exist_ok=True)
-    os.chown(prefix, uid, gid)
-"""
-npm_new = """    prefix = pathlib.Path("/opt/hermes-tools/npm")
-    uid, gid = user_ids(ctx.runtime_user)
-    prefix.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(prefix.parent, 0o755)
-    prefix.mkdir(parents=True, exist_ok=True)
-    os.chown(prefix, uid, gid)
-    os.chmod(prefix, 0o755)
-"""
-if npm_old in text:
-    text = text.replace(npm_old, npm_new, 1)
-elif npm_new not in text:
-    raise SystemExit("ERROR: npm permission hotfix target was not found; refusing to continue")
-
-path.write_text(text, encoding="utf-8")
-PYHOTFIX
-  echo "Applied verified Fedora DNF5 and npm permissions hotfixes."
-fi
 
 release_dir="$INSTALL_BASE/releases/$KIT_VERSION"
 mkdir -p "$INSTALL_BASE/releases"

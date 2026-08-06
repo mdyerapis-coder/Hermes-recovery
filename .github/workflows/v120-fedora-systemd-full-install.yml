@@ -1,0 +1,360 @@
+name: v1.2.0 disposable Fedora systemd install
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/v120-fedora-systemd-full-install.yml'
+      - 'install.sh'
+      - 'SHA256SUMS'
+      - 'VERSION'
+      - 'payload/**'
+  push:
+    branches: [agent/bitwarden-smart-resume-v1.2.0-final]
+    paths:
+      - '.github/workflows/v120-fedora-systemd-full-install.yml'
+      - 'install.sh'
+      - 'SHA256SUMS'
+      - 'VERSION'
+      - 'payload/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v120-fedora-systemd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ARCHIVE_NAME: hermes-rebuild-kit-v1.2.0.tar.gz
+  CONTAINER_NAME: hermes-v120-fedora-systemd
+
+jobs:
+  full-install:
+    name: Clean Fedora systemd install and rerun
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Reconstruct and verify signed archive
+        run: |
+          set -Eeuo pipefail
+          mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
+          test "${#parts[@]}" -eq 7
+          for index in "${!parts[@]}"; do
+            printf -v expected 'payload/%s.b64.part-%03d' "$ARCHIVE_NAME" "$index"
+            test "${parts[$index]}" = "$expected"
+            test -s "${parts[$index]}"
+          done
+          cat "${parts[@]}" | base64 --decode > "/tmp/$ARCHIVE_NAME"
+          (
+            cd /tmp
+            grep "  $ARCHIVE_NAME$" "$GITHUB_WORKSPACE/SHA256SUMS" \
+              | sha256sum --check --strict -
+          )
+          rm -rf /tmp/hermes-signed-kit
+          mkdir -p /tmp/hermes-signed-kit
+          tar -xzf "/tmp/$ARCHIVE_NAME" -C /tmp/hermes-signed-kit
+          (
+            cd /tmp/hermes-signed-kit/hermes-rebuild-kit
+            sha256sum --check --strict MANIFEST.sha256
+            ./tests/run.sh
+          )
+
+      - name: Prepare non-interactive validation configuration
+        run: |
+          cat > /tmp/hermes-validation.yaml <<'CFG'
+          server:
+            type: cloud-vm
+            ram_gb: auto
+            vram_gb: 0
+            deployment_mode: validation
+            timezone: Australia/Melbourne
+            expected_hostname: hermes-station
+            enforce_grounding: true
+            allow_hostname_change: false
+            forbidden_hostnames:
+              - hada-control
+          runtime:
+            user: bobthabuilda
+            install_root: /opt/hermes-stack
+            state_dir: /etc/hermes-rebuild
+            backup_root: /var/backups/hermes-rebuild
+          components:
+            host_grounding: true
+            openssh: true
+            firewall: true
+            tailscale: false
+            laptop_lid_protection: true
+            docker: true
+            nvidia_container_toolkit: false
+            hermes: true
+            hada: true
+            agent_forge: false
+            claude_code: true
+            codex_cli: true
+            gateway_service: true
+            bitwarden_cli: false
+          network:
+            ssh:
+              tailscale_only: false
+              password_authentication: preserve
+              permit_root_login: prohibit-password
+          auth:
+            claude_code_oauth: false
+            chatgpt_codex_oauth: false
+            github_cli_auth: false
+            run_oauth_during_interactive_recovery: false
+          bitwarden:
+            enabled: false
+          hermes:
+            probe_primary_provider: false
+          hada:
+            allow_deployment: false
+            run_local_tests: true
+            run_preflight: true
+          CFG
+          chmod 600 /tmp/hermes-validation.yaml
+
+      - name: Build disposable Fedora systemd image
+        run: |
+          set -Eeuo pipefail
+          cat > /tmp/Dockerfile.hermes-fedora <<'EOF'
+          FROM fedora:latest
+          ENV container=docker
+          RUN dnf -y install \
+                systemd systemd-udev procps-ng iproute hostname sudo findutils && \
+              dnf clean all && \
+              systemctl mask \
+                dev-hugepages.mount \
+                sys-fs-fuse-connections.mount \
+                systemd-remount-fs.service \
+                getty@.service \
+                console-getty.service
+          STOPSIGNAL SIGRTMIN+3
+          CMD ["/sbin/init"]
+          EOF
+          docker build --pull \
+            --tag hermes-v120-fedora-systemd \
+            --file /tmp/Dockerfile.hermes-fedora \
+            /tmp
+
+      - name: Boot pre-grounded disposable Fedora host
+        run: |
+          set -Eeuo pipefail
+          docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+          docker run --detach \
+            --name "$CONTAINER_NAME" \
+            --hostname hermes-station \
+            --privileged \
+            --cgroupns=host \
+            --tmpfs /run \
+            --tmpfs /run/lock \
+            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            hermes-v120-fedora-systemd
+
+          for attempt in $(seq 1 60); do
+            state="$(docker exec "$CONTAINER_NAME" \
+              systemctl is-system-running 2>/dev/null || true)"
+            case "$state" in
+              running|degraded) break ;;
+            esac
+            sleep 2
+          done
+
+          state="$(docker exec "$CONTAINER_NAME" \
+            systemctl is-system-running 2>/dev/null || true)"
+          test "$state" = running || test "$state" = degraded
+          test "$(docker exec "$CONTAINER_NAME" hostname)" = hermes-station
+          docker exec "$CONTAINER_NAME" dnf --version
+
+      - name: Install candidate on clean Fedora host
+        run: |
+          set -Eeuo pipefail
+          docker cp "/tmp/$ARCHIVE_NAME" \
+            "$CONTAINER_NAME:/root/$ARCHIVE_NAME"
+          docker cp /tmp/hermes-validation.yaml \
+            "$CONTAINER_NAME:/root/hermes-validation.yaml"
+
+          set +e
+          docker exec "$CONTAINER_NAME" bash -lc '
+            set -Eeuo pipefail
+            rm -rf /root/hermes-kit
+            mkdir -p /root/hermes-kit /etc/docker
+            tar -xzf /root/hermes-rebuild-kit-v1.2.0.tar.gz \
+              -C /root/hermes-kit
+            cd /root/hermes-kit/hermes-rebuild-kit
+            sha256sum --check --strict MANIFEST.sha256
+            printf "%s\n" "{\"storage-driver\":\"vfs\"}" \
+              > /etc/docker/daemon.json
+            chmod 600 /root/hermes-validation.yaml
+            ./bootstrap.sh \
+              --config /root/hermes-validation.yaml \
+              --non-interactive \
+              --verbose \
+              > /root/first-install.log 2>&1
+          '
+          rc=$?
+          set -e
+          docker exec "$CONTAINER_NAME" cat /root/first-install.log || true
+          test "$rc" -eq 0
+
+      - name: Validate installed host and safety controls
+        run: |
+          set -Eeuo pipefail
+          docker exec "$CONTAINER_NAME" bash -lc '
+            set -Eeuo pipefail
+            python3 - <<"PY"
+          import json
+          from pathlib import Path
+
+          state = json.loads(Path("/etc/hermes-rebuild/state.json").read_text())
+          unresolved = {
+              name: item.get("status")
+              for name, item in state.get("stages", {}).items()
+              if item.get("status") in {"incomplete", "failed", "stale", "running"}
+          }
+          assert not unresolved, unresolved
+          assert state["runs"][-1]["status"] == "healthy", state["runs"][-1]
+          required = {
+              "runtime-user", "host-grounding", "base-packages", "backup",
+              "laptop-lid", "openssh", "tailscale", "firewall", "node",
+              "uv-python", "docker", "nvidia-toolkit", "bitwarden",
+              "secrets", "cli-tools", "github-auth", "hermes", "hada",
+              "agent-forge", "skills", "extra-projects", "oauth", "gateway",
+              "provider-probe",
+          }
+          missing = required - set(state.get("stages", {}))
+          assert not missing, missing
+          PY
+
+            test "$(hostname)" = hermes-station
+            test "$(timedatectl show -p Timezone --value)" = Australia/Melbourne
+            systemctl is-active --quiet sshd.service
+            systemctl is-active --quiet firewalld.service
+            systemctl is-active --quiet docker.service
+            systemctl is-active --quiet hermes-gateway-rebuild.service
+            systemd-analyze verify \
+              /etc/systemd/system/hermes-gateway-rebuild.service
+
+            test -x /opt/hermes-stack/hermes-agent/.venv/bin/hermes
+            runuser -u bobthabuilda -- \
+              /opt/hermes-stack/hermes-agent/.venv/bin/hermes --version
+            runuser -u bobthabuilda -- claude --version
+            runuser -u bobthabuilda -- codex --version
+
+            namei -om /opt/nodejs
+            namei -om /opt/hermes-tools/npm/bin
+            runuser -u bobthabuilda -- test -x /usr/local/bin/node
+            runuser -u bobthabuilda -- \
+              test -x /opt/hermes-tools/npm/bin/claude
+            runuser -u bobthabuilda -- \
+              test -x /opt/hermes-tools/npm/bin/codex
+
+            safe_dirs="$(runuser -u bobthabuilda -- \
+              git config --global --get-all safe.directory)"
+            grep -Fx /opt/hermes-stack/hermes-agent <<<"$safe_dirs"
+            grep -Fx /opt/hermes-stack/hada <<<"$safe_dirs"
+
+            test -f /etc/hermes-rebuild/grounding.json
+            ! grep -R \
+              --exclude=state.json \
+              --exclude=health-last.json \
+              -nE "(tskey-|ghp_|github_pat_|sk-[A-Za-z0-9])" \
+              /etc/hermes-rebuild /root/first-install.log
+          '
+
+      - name: Rerun over working disposable installation
+        run: |
+          set -Eeuo pipefail
+          set +e
+          docker exec "$CONTAINER_NAME" bash -lc '
+            set -Eeuo pipefail
+            cp /etc/hermes-rebuild/state.json /root/state-before-rerun.json
+            cd /root/hermes-kit/hermes-rebuild-kit
+            ./bootstrap.sh \
+              --config /root/hermes-validation.yaml \
+              --non-interactive \
+              --verbose \
+              > /root/rerun.log 2>&1
+          '
+          rc=$?
+          set -e
+          docker exec "$CONTAINER_NAME" cat /root/rerun.log || true
+          test "$rc" -eq 0
+
+          docker exec "$CONTAINER_NAME" bash -lc '
+            set -Eeuo pipefail
+            python3 - <<"PY"
+          import json
+          from pathlib import Path
+
+          before = json.loads(Path("/root/state-before-rerun.json").read_text())
+          after = json.loads(Path("/etc/hermes-rebuild/state.json").read_text())
+          assert len(after["runs"]) == len(before["runs"]) + 1
+          assert after["runs"][-1]["status"] == "healthy"
+          unresolved = {
+              name: item.get("status")
+              for name, item in after.get("stages", {}).items()
+              if item.get("status") in {"incomplete", "failed", "stale", "running"}
+          }
+          assert not unresolved, unresolved
+          for name, item in before.get("stages", {}).items():
+              if item.get("status") == "completed":
+                  assert after["stages"][name].get("attempt") == item.get("attempt"), (
+                      name,
+                      item.get("attempt"),
+                      after["stages"][name].get("attempt"),
+                  )
+          PY
+            systemctl is-active --quiet hermes-gateway-rebuild.service
+            runuser -u bobthabuilda -- \
+              /opt/hermes-stack/hermes-agent/.venv/bin/hermes --version
+          '
+
+      - name: Collect and self-verify validation evidence
+        if: always()
+        run: |
+          set +e
+          evidence=/tmp/hermes-fedora-evidence
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
+          for source in \
+            /root/first-install.log \
+            /root/rerun.log \
+            /etc/hermes-rebuild/state.json \
+            /etc/hermes-rebuild/health-last.json; do
+            docker cp "$CONTAINER_NAME:$source" "$evidence/" 2>/dev/null || true
+          done
+          docker exec "$CONTAINER_NAME" bash -lc '
+            systemctl --failed --no-pager || true
+            systemctl status hermes-gateway-rebuild.service --no-pager || true
+            journalctl -u hermes-gateway-rebuild.service -n 200 --no-pager || true
+            dnf --version
+            node --version || true
+            npm --version || true
+            runuser -u bobthabuilda -- claude --version || true
+            runuser -u bobthabuilda -- codex --version || true
+            runuser -u bobthabuilda -- hermes --version || true
+          ' > "$evidence/system-report.log" 2>&1
+
+          (
+            cd "$evidence"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+          )
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v120-fedora-systemd-evidence
+          path: /tmp/hermes-fedora-evidence
+          if-no-files-found: warn
+          retention-days: 30
