@@ -9,6 +9,7 @@ import pathlib
 import pty
 import select
 import signal
+import shutil
 import subprocess
 import sys
 import termios
@@ -143,6 +144,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if bypass_hsp(args.controller_args):
         return run_controller(command, os.environ.copy(), args.controller_args)
+
+    if shutil.which("bw") is None and os.environ.get("HERMES_HSP_INSTALL_BW", "1") != "0":
+        installer = kit_root / "bin" / "install_bw_cli.py"
+        try:
+            subprocess.run([sys.executable, str(installer)], check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"ERROR: unable to install verified Bitwarden CLI: {exc}", file=sys.stderr)
+            return 69
 
     sys.path.insert(0, str(kit_root / "lib"))
     from hermes_hsp import BitwardenProvider, HSPError, load_manifest, resolve_environment
