@@ -1,10 +1,18 @@
 project: recovery
 secrets:
-  required:
-    - alias: bitwarden
-      purpose: vault_access
+  required: []
   optional:
     - alias: tailscale
       purpose: network_access
     - alias: telegram
       purpose: messaging
+    - alias: openai
+      purpose: primary_llm
+    - alias: openrouter
+      purpose: fallback_llm
+    - alias: opencode
+      purpose: coding_provider
+    - alias: opencode_zen
+      purpose: coding_provider
+    - alias: opencode_go
+      purpose: coding_provider

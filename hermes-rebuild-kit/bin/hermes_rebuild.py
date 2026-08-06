@@ -2001,7 +2001,10 @@ def render_plan(config: dict[str, Any], profile: dict[str, Any]) -> None:
     print(yaml.safe_dump(plan, sort_keys=False))
 
 
-def build_context(args: argparse.Namespace) -> tuple[Context, str]:
+def build_context(
+    args: argparse.Namespace,
+    provider_secrets: dict[str, object] | None = None,
+) -> tuple[Context, str]:
     log = Log(args.verbose)
     runner = Runner(log, dry_run=args.plan)
     config = default_config()
@@ -2032,6 +2035,10 @@ def build_context(args: argparse.Namespace) -> tuple[Context, str]:
     except KeyError:
         runtime_home = pathlib.Path("/home") / runtime_user
     secrets: dict[str, str] = {}
+    if provider_secrets:
+        for alias, value in provider_secrets.items():
+            if value is not None:
+                secrets[str(alias)] = str(value)
     if not (args.plan or args.health or args.summary or args.rollback):
         secrets.update(load_existing_secrets(state_dir, runner))
         secrets.update(resolve_secrets(config))
@@ -2070,7 +2077,44 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    ctx, config_hash = build_context(args)
+    provider_manager = None
+    provider_values: dict[str, object] = {}
+
+    provider_active = bool(
+        args.config
+        and not (args.plan or args.health or args.summary or args.rollback)
+    )
+
+    if provider_active:
+        kit_root = pathlib.Path(args.kit_root).resolve()
+        kit_root_text = str(kit_root)
+
+        if kit_root_text not in sys.path:
+            sys.path.insert(0, kit_root_text)
+
+        from providers.exceptions import SecretProviderError
+        from providers.integration import provider_session
+
+        config_path = pathlib.Path(args.config).resolve()
+        manifest_path = kit_root / "manifests" / "recovery.yaml"
+        provider_manager = provider_session(config_path, manifest_path)
+
+        try:
+            provider_values = provider_manager.__enter__()
+        except (SecretProviderError, ValueError, OSError) as exc:
+            print(
+                f"ERROR: secret-provider preflight failed: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+    try:
+        ctx, config_hash = build_context(args, provider_values)
+    except Exception:
+        if provider_manager is not None:
+            provider_manager.__exit__(*sys.exc_info())
+        raise
+
     if args.summary:
         print(ctx.state.summary())
         return 0
@@ -2128,5 +2172,8 @@ def main() -> int:
         return 1
 
 
+    finally:
+        if provider_manager is not None:
+            provider_manager.__exit__(None, None, None)
 if __name__ == "__main__":
     raise SystemExit(main())
