@@ -19,7 +19,6 @@ class SecretSpec:
 class FolderScope:
     roots: tuple[str, ...] = ("AI & LLM",)
     include_descendants: bool = True
-    active_only: bool = True
 
 
 @dataclass
