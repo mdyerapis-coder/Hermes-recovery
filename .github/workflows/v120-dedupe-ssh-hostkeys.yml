@@ -1,0 +1,211 @@
+name: v1.2.0 deduplicate SSH host-key setup
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v120-dedupe-ssh-hostkeys.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v120-dedupe-ssh-hostkeys
+  cancel-in-progress: false
+
+env:
+  RELEASE_BRANCH: agent/bitwarden-smart-resume-v1.2.0-final
+  ARCHIVE_NAME: hermes-rebuild-kit-v1.2.0.tar.gz
+
+jobs:
+  rebuild:
+    name: Deduplicate, test, sign and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Install test dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-yaml
+
+      - name: Rebuild signed seven-part payload
+        run: |
+          set -Eeuo pipefail
+          work="$(mktemp -d)"
+          trap 'sudo rm -rf "$work"' EXIT
+          mkdir -p "$work/source" "$work/payload" "$work/pycache"
+
+          mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
+          test "${#parts[@]}" -eq 7
+          for index in "${!parts[@]}"; do
+            printf -v expected 'payload/%s.b64.part-%03d' "$ARCHIVE_NAME" "$index"
+            test "${parts[$index]}" = "$expected"
+            test -s "${parts[$index]}"
+          done
+
+          cat "${parts[@]}" | base64 --decode > "$work/current.tar.gz"
+          (
+            cd "$work"
+            grep "  $ARCHIVE_NAME$" "$GITHUB_WORKSPACE/SHA256SUMS" \
+              | sed "s#  $ARCHIVE_NAME#  current.tar.gz#" \
+              | sha256sum --check --strict -
+          )
+          tar -xzf "$work/current.tar.gz" -C "$work/source"
+          kit="$work/source/hermes-rebuild-kit"
+          (
+            cd "$kit"
+            sha256sum --check --strict MANIFEST.sha256
+          )
+
+          python3 - "$kit" <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+
+          controller = root / "bin" / "hermes_rebuild.py"
+          lines = controller.read_text().splitlines(keepends=True)
+          start = next(i for i, line in enumerate(lines) if line.startswith("def install_openssh"))
+          end = next(i for i, line in enumerate(lines[start + 1 :], start + 1) if line.startswith("def _tailscale_connected"))
+          calls = [
+              i for i in range(start, end)
+              if lines[i].strip() == 'ctx.runner.run(["ssh-keygen", "-A"])'
+          ]
+          if len(calls) != 2:
+              raise SystemExit(f"expected two SSH host-key calls, found {calls}")
+          second = calls[1]
+          if "Minimal/image Fedora" not in lines[second - 2]:
+              raise SystemExit("second SSH block has unexpected first comment")
+          if "creates only missing keys" not in lines[second - 1]:
+              raise SystemExit("second SSH block has unexpected second comment")
+          del lines[second - 2 : second + 1]
+          controller.write_text("".join(lines))
+          body = controller.read_text()[
+              controller.read_text().index("def install_openssh") :
+              controller.read_text().index("def _tailscale_connected")
+          ]
+          if body.count('ctx.runner.run(["ssh-keygen", "-A"])') != 1:
+              raise SystemExit("SSH host-key setup was not deduplicated")
+
+          regression = root / "tests" / "regression_v120_test.py"
+          lines = regression.read_text().splitlines(keepends=True)
+          definitions = [
+              i for i, line in enumerate(lines)
+              if line.startswith("def test_openssh_generates_missing_host_keys_before_validation")
+          ]
+          if len(definitions) != 2:
+              raise SystemExit(f"expected two duplicate SSH tests, found {definitions}")
+          second = definitions[1]
+          end = next(
+              (i for i in range(second + 1, len(lines)) if lines[i].startswith("def ")),
+              len(lines),
+          )
+          del lines[second:end]
+
+          calls = [
+              i for i, line in enumerate(lines)
+              if line.strip() == "test_openssh_generates_missing_host_keys_before_validation()"
+          ]
+          if len(calls) != 2:
+              raise SystemExit(f"expected two duplicate SSH test calls, found {calls}")
+          del lines[calls[1]]
+          text = "".join(lines)
+          marker = "    assert generate in body\n"
+          if text.count(marker) != 1:
+              raise SystemExit("unexpected retained SSH assertion marker")
+          text = text.replace(
+              marker,
+              marker + "    assert body.count(generate) == 1\n",
+          )
+          regression.write_text(text)
+
+          if regression.read_text().count(
+              "def test_openssh_generates_missing_host_keys_before_validation"
+          ) != 1:
+              raise SystemExit("duplicate SSH regression function remains")
+          if regression.read_text().count(
+              "    test_openssh_generates_missing_host_keys_before_validation()\n"
+          ) != 1:
+              raise SystemExit("duplicate SSH regression call remains")
+          PY
+
+          (
+            cd "$kit"
+            find . -type d -name __pycache__ -prune -exec rm -rf {} +
+            find . -type f ! -name MANIFEST.sha256 -printf '%P\0' \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > MANIFEST.sha256
+            sha256sum --check --strict MANIFEST.sha256
+            bash -n install.sh bootstrap.sh bin/hermes-rebuildctl tests/run.sh
+            sudo env \
+              PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONPYCACHEPREFIX="$work/pycache" \
+              ./tests/run.sh
+            find . -type d -name __pycache__ -prune -exec rm -rf {} +
+            sha256sum --check --strict MANIFEST.sha256
+          )
+
+          (
+            cd "$work/source"
+            tar \
+              --sort=name \
+              --mtime='2026-08-05 00:00:00Z' \
+              --owner=0 \
+              --group=0 \
+              --numeric-owner \
+              --format=gnu \
+              -cf "$work/release.tar" hermes-rebuild-kit
+          )
+          gzip -n -9 -c "$work/release.tar" > "$work/$ARCHIVE_NAME"
+          archive_sha="$(sha256sum "$work/$ARCHIVE_NAME" | awk '{print $1}')"
+          printf 'published archive SHA-256: %s\n' "$archive_sha"
+
+          base64 -w0 "$work/$ARCHIVE_NAME" > "$work/$ARCHIVE_NAME.b64"
+          split \
+            --number=7 \
+            --numeric-suffixes=0 \
+            --suffix-length=3 \
+            "$work/$ARCHIVE_NAME.b64" \
+            "$work/payload/$ARCHIVE_NAME.b64.part-"
+          test "$(find "$work/payload" -maxdepth 1 -type f | wc -l)" -eq 7
+          for index in $(seq 0 6); do
+            printf -v part '%s/payload/%s.b64.part-%03d' "$work" "$ARCHIVE_NAME" "$index"
+            test -s "$part"
+          done
+          cat "$work"/payload/*.part-* | base64 --decode > "$work/reconstructed.tar.gz"
+          cmp "$work/$ARCHIVE_NAME" "$work/reconstructed.tar.gz"
+          test "$(sha256sum "$work/reconstructed.tar.gz" | awk '{print $1}')" = "$archive_sha"
+
+          rm -rf "$work/verify"
+          mkdir -p "$work/verify"
+          tar -xzf "$work/reconstructed.tar.gz" -C "$work/verify"
+          (
+            cd "$work/verify/hermes-rebuild-kit"
+            sha256sum --check --strict MANIFEST.sha256
+            sudo env \
+              PYTHONDONTWRITEBYTECODE=1 \
+              PYTHONPYCACHEPREFIX="$work/verify-pycache" \
+              ./tests/run.sh
+          )
+
+          printf '%s  %s\n' "$archive_sha" "$ARCHIVE_NAME" > SHA256SUMS
+          rm -f payload/$ARCHIVE_NAME.b64.part-*
+          cp "$work"/payload/$ARCHIVE_NAME.b64.part-* payload/
+
+          cat "${parts[@]}" | base64 --decode > "$work/repo-reconstruction.tar.gz"
+          test "$(sha256sum "$work/repo-reconstruction.tar.gz" | awk '{print $1}')" = "$archive_sha"
+
+          git config user.name 'Hermes Recovery CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add SHA256SUMS payload/$ARCHIVE_NAME.b64.part-*
+          git diff --cached --check
+          git commit -m 'chore: deduplicate SSH host-key setup'
+          git push origin "HEAD:$RELEASE_BRANCH"
