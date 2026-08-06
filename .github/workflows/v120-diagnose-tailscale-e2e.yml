@@ -1,0 +1,40 @@
+name: Diagnose v1.2.0 Tailscale E2E fixture
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/v120-diagnose-tailscale-e2e.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@v4
+
+      - name: Reconstruct and inspect signed tests
+        run: |
+          set -Eeuo pipefail
+          archive=hermes-rebuild-kit-v1.2.0.tar.gz
+          mapfile -t parts < <(grep -Ev '^[[:space:]]*(#|$)' payload/parts.txt)
+          test "${#parts[@]}" -eq 7
+          cat "${parts[@]}" | base64 --decode > "/tmp/$archive"
+          (
+            cd /tmp
+            grep "  $archive$" "$GITHUB_WORKSPACE/SHA256SUMS" | sha256sum --check --strict -
+          )
+          rm -rf /tmp/hermes-tailscale-e2e-diagnostic
+          mkdir -p /tmp/hermes-tailscale-e2e-diagnostic
+          tar -xzf "/tmp/$archive" -C /tmp/hermes-tailscale-e2e-diagnostic
+          cd /tmp/hermes-tailscale-e2e-diagnostic/hermes-rebuild-kit
+          sha256sum --check --strict MANIFEST.sha256
+          echo '--- E2E fake runner and integrated policy ---'
+          grep -n -C 45 -E 'class FakeRunner|class RecordingRunner|def test_integrated_recovery_policy|shutil.which|tailscale' \
+            tests/e2e_test.py || true
+          echo '--- E2E lines 1-260 ---'
+          nl -ba tests/e2e_test.py | sed -n '1,260p'
