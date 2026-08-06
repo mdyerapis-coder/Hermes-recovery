@@ -1,0 +1,99 @@
+name: Build Hermes Recovery v1.2 candidate
+
+on:
+  push:
+    branches:
+      - agent/hsp-bitwarden-v1.2
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || !contains(github.event.head_commit.message, '[skip release build]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Test provider and release builder
+        run: bash tests/run_hsp.sh
+
+      - name: Build and verify v1.2.0
+        run: |
+          rm -rf dist
+          python3 scripts/build_release.py \
+            --repo-root . \
+            --overlay overlay \
+            --source-version 1.1.0 \
+            --version 1.2.0 \
+            --output-dir dist
+
+      - name: Publish generated candidate files
+        run: |
+          cp dist/hermes-rebuild-kit-v1.2.0.tar.gz ./hermes-rebuild-kit-v1.2.0.tar.gz
+          cp dist/SHA256SUMS ./SHA256SUMS
+          cp dist/VERSION ./VERSION
+          rm -f payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-*
+          cp dist/payload/hermes-rebuild-kit-v1.2.0.tar.gz.b64.part-* payload/
+          cp dist/payload/parts.txt payload/parts.txt
+          python3 - <<'PY'
+          from pathlib import Path
+
+          install = Path('install.sh')
+          text = install.read_text(encoding='utf-8')
+          text = text.replace(
+              'KIT_VERSION="${HERMES_RECOVERY_VERSION:-1.1.0}"',
+              'KIT_VERSION="${HERMES_RECOVERY_VERSION:-1.2.0}"',
+          )
+          text = text.replace('HERMES_RECOVERY_VERSION=1.1.0', 'HERMES_RECOVERY_VERSION=1.2.0')
+          install.write_text(text, encoding='utf-8')
+
+          readme = Path('README.md')
+          body = readme.read_text(encoding='utf-8')
+          heading = '## Bitwarden-backed secret recovery\n'
+          if heading not in body:
+              section = '''## Bitwarden-backed secret recovery
+
+Hermes Recovery v1.2 includes Hermes Secret Provider (HSP). During an active
+recovery run it uses the Bitwarden CLI to search the `AI & LLM` folder and its
+path-like descendants, resolves unique aliases, preserves existing environment
+credentials, and injects recognised values into no-echo recovery prompts.
+Secret values are not printed or written into the recovery manifest. See
+[`docs/HERMES-SECRET-PROVIDER.md`](docs/HERMES-SECRET-PROVIDER.md).
+
+'''
+              body = body.replace('## Host grounding and safeguards\n', section + '## Host grounding and safeguards\n')
+              readme.write_text(body, encoding='utf-8')
+          PY
+
+      - name: Verify repository release surface
+        run: |
+          sha256sum --check --strict SHA256SUMS
+          cat $(cat payload/parts.txt) | base64 --decode > /tmp/hermes-rebuild-kit-v1.2.0.tar.gz
+          cmp hermes-rebuild-kit-v1.2.0.tar.gz /tmp/hermes-rebuild-kit-v1.2.0.tar.gz
+          tar -tzf hermes-rebuild-kit-v1.2.0.tar.gz >/dev/null
+          git diff --check
+
+      - name: Commit generated candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add README.md VERSION SHA256SUMS install.sh \
+            hermes-rebuild-kit-v1.2.0.tar.gz payload/
+          if git diff --cached --quiet; then
+            echo 'Generated candidate already current.'
+            exit 0
+          fi
+          git commit -m 'Publish Hermes recovery v1.2.0 candidate [skip release build]'
+          git push origin HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}
