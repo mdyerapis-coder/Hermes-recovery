@@ -3,8 +3,7 @@ name: v1.2.0 disposable Fedora systemd install
 on:
   workflow_dispatch:
   pull_request:
-    branches:
-      - main
+    branches: [main]
     paths:
       - '.github/workflows/v120-fedora-systemd-full-install.yml'
       - 'install.sh'
@@ -12,8 +11,7 @@ on:
       - 'VERSION'
       - 'payload/**'
   push:
-    branches:
-      - agent/bitwarden-smart-resume-v1.2.0-final
+    branches: [agent/bitwarden-smart-resume-v1.2.0-final]
     paths:
       - '.github/workflows/v120-fedora-systemd-full-install.yml'
       - 'install.sh'
@@ -57,6 +55,14 @@ jobs:
             cd /tmp
             grep "  $ARCHIVE_NAME$" "$GITHUB_WORKSPACE/SHA256SUMS" \
               | sha256sum --check --strict -
+          )
+          rm -rf /tmp/hermes-signed-kit
+          mkdir -p /tmp/hermes-signed-kit
+          tar -xzf "/tmp/$ARCHIVE_NAME" -C /tmp/hermes-signed-kit
+          (
+            cd /tmp/hermes-signed-kit/hermes-rebuild-kit
+            sha256sum --check --strict MANIFEST.sha256
+            ./tests/run.sh
           )
 
       - name: Prepare non-interactive validation configuration
@@ -179,7 +185,7 @@ jobs:
             set -Eeuo pipefail
             rm -rf /root/hermes-kit
             mkdir -p /root/hermes-kit /etc/docker
-            tar -xzf "/root/hermes-rebuild-kit-v1.2.0.tar.gz" \
+            tar -xzf /root/hermes-rebuild-kit-v1.2.0.tar.gz \
               -C /root/hermes-kit
             cd /root/hermes-kit/hermes-rebuild-kit
             sha256sum --check --strict MANIFEST.sha256
@@ -194,8 +200,7 @@ jobs:
           '
           rc=$?
           set -e
-          docker exec "$CONTAINER_NAME" \
-            cat /root/first-install.log || true
+          docker exec "$CONTAINER_NAME" cat /root/first-install.log || true
           test "$rc" -eq 0
 
       - name: Validate installed host and safety controls
@@ -208,12 +213,12 @@ jobs:
           from pathlib import Path
 
           state = json.loads(Path("/etc/hermes-rebuild/state.json").read_text())
-          bad = {
+          unresolved = {
               name: item.get("status")
               for name, item in state.get("stages", {}).items()
               if item.get("status") in {"incomplete", "failed", "stale", "running"}
           }
-          assert not bad, bad
+          assert not unresolved, unresolved
           assert state["runs"][-1]["status"] == "healthy", state["runs"][-1]
           required = {
               "runtime-user", "host-grounding", "base-packages", "backup",
@@ -292,12 +297,12 @@ jobs:
           after = json.loads(Path("/etc/hermes-rebuild/state.json").read_text())
           assert len(after["runs"]) == len(before["runs"]) + 1
           assert after["runs"][-1]["status"] == "healthy"
-          bad = {
+          unresolved = {
               name: item.get("status")
               for name, item in after.get("stages", {}).items()
               if item.get("status") in {"incomplete", "failed", "stale", "running"}
           }
-          assert not bad, bad
+          assert not unresolved, unresolved
           for name, item in before.get("stages", {}).items():
               if item.get("status") == "completed":
                   assert after["stages"][name].get("attempt") == item.get("attempt"), (
@@ -311,34 +316,39 @@ jobs:
               /opt/hermes-stack/hermes-agent/.venv/bin/hermes --version
           '
 
-      - name: Collect validation evidence
+      - name: Collect and self-verify validation evidence
         if: always()
         run: |
           set +e
-          rm -rf /tmp/hermes-fedora-evidence
-          mkdir -p /tmp/hermes-fedora-evidence
+          evidence=/tmp/hermes-fedora-evidence
+          rm -rf "$evidence"
+          mkdir -p "$evidence"
           for source in \
             /root/first-install.log \
             /root/rerun.log \
             /etc/hermes-rebuild/state.json \
             /etc/hermes-rebuild/health-last.json; do
-            docker cp "$CONTAINER_NAME:$source" \
-              /tmp/hermes-fedora-evidence/ 2>/dev/null || true
+            docker cp "$CONTAINER_NAME:$source" "$evidence/" 2>/dev/null || true
           done
           docker exec "$CONTAINER_NAME" bash -lc '
             systemctl --failed --no-pager || true
             systemctl status hermes-gateway-rebuild.service --no-pager || true
-            journalctl -u hermes-gateway-rebuild.service \
-              -n 200 --no-pager || true
+            journalctl -u hermes-gateway-rebuild.service -n 200 --no-pager || true
             dnf --version
             node --version || true
             npm --version || true
             runuser -u bobthabuilda -- claude --version || true
             runuser -u bobthabuilda -- codex --version || true
             runuser -u bobthabuilda -- hermes --version || true
-          ' > /tmp/hermes-fedora-evidence/system-report.log 2>&1
-          sha256sum /tmp/hermes-fedora-evidence/* \
-            > /tmp/hermes-fedora-evidence/SHA256SUMS 2>/dev/null || true
+          ' > "$evidence/system-report.log" 2>&1
+
+          (
+            cd "$evidence"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+          )
 
       - name: Upload validation evidence
         if: always()
